@@ -123,18 +123,20 @@ def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple
             if not identity_available:
                 return False, "not enough recorded UI text to verify the screen without app/window identity"
         else:
+            if not actual_texts:
+                return False, "recorded UI text exists but current UI hierarchy is unavailable"
             if not actual.get("uiSnapshotReliable"):
                 return False, "current UI hierarchy snapshot is not reliable; app/window may have changed during capture"
             expected_ui_package = expected.get("uiForegroundPackage")
             actual_ui_package = actual.get("uiForegroundPackage")
-            expected_ui_window = expected.get("uiFocusedWindowPackage")
-            actual_ui_window = actual.get("uiFocusedWindowPackage")
-            if expected_ui_package and actual_ui_package and expected_ui_package != actual_ui_package:
-                return False, f"UI hierarchy belongs to a different app (recorded={expected_ui_package}, current={actual_ui_package})"
-            if expected_ui_window and actual_ui_window and expected_ui_window != actual_ui_window:
-                return False, f"UI hierarchy belongs to a different focused window (recorded={expected_ui_window}, current={actual_ui_window})"
-            if not actual_texts:
-                return False, "recorded UI text exists but current UI hierarchy is unavailable"
+            if expected_ui_package and actual_ui_package:
+                if expected_ui_package != actual_ui_package:
+                    return False, f"UI hierarchy belongs to a different app (recorded={expected_ui_package}, current={actual_ui_package})"
+            else:
+                expected_ui_window = expected.get("uiFocusedWindowPackage")
+                actual_ui_window = actual.get("uiFocusedWindowPackage")
+                if expected_ui_window and actual_ui_window and expected_ui_window != actual_ui_window:
+                    return False, f"UI hierarchy belongs to a different focused window (recorded={expected_ui_window}, current={actual_ui_window})"
             wanted = {normalize_text(str(x)) for x in expected_texts if str(x).strip()}
             got = {normalize_text(str(x)) for x in actual_texts if str(x).strip()}
             overlap = len(wanted & got)
