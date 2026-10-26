@@ -54,6 +54,7 @@ object WorkflowStore {
     private const val KEY_RECORDING = "recording"
     private const val KEY_STATUS = "status"
     private const val KEY_RECORD_TEXT = "record_text_input"
+    private const val KEY_REPLAY_LOG = "replay_log"
 
     fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun isRecording(context: Context) = prefs(context).getBoolean(KEY_RECORDING, false)
@@ -90,4 +91,26 @@ object WorkflowStore {
     }
 
     fun clear(context: Context) { prefs(context).edit().putString(KEY_ACTIONS, "[]").apply() }
+
+    fun replayLogs(context: Context): List<String> {
+        val array = runCatching {
+            JSONArray(prefs(context).getString(KEY_REPLAY_LOG, "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        return (0 until array.length()).mapNotNull { index ->
+            array.optString(index).takeIf { it.isNotBlank() }
+        }
+    }
+
+    fun addReplayLog(context: Context, message: String) {
+        val array = runCatching {
+            JSONArray(prefs(context).getString(KEY_REPLAY_LOG, "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        array.put(message)
+        while (array.length() > 50) array.remove(0)
+        prefs(context).edit().putString(KEY_REPLAY_LOG, array.toString()).apply()
+    }
+
+    fun clearReplayLog(context: Context) {
+        prefs(context).edit().putString(KEY_REPLAY_LOG, "[]").apply()
+    }
 }
