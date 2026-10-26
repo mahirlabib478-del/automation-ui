@@ -101,16 +101,21 @@ class AutomationAccessibilityService : AccessibilityService() {
                 val source = event.source
                 val systemAction = detectSystemNavigationAction(packageName, source)
                 val actionType = systemAction ?: "CLICK"
-                val action = buildAction(
-                    type = actionType,
-                    event = event,
-                    source = source,
-                    textOverride = if (actionType == "CLICK") safeLabel(source, event) else null,
-                    scrollDeltaY = 0
-                )
+                val action = if (actionType == "CLICK") {
+                    buildClickAction(event, source)
+                } else {
+                    buildAction(
+                        type = actionType,
+                        event = event,
+                        source = source,
+                        textOverride = null,
+                        scrollDeltaY = 0
+                    )
+                }
                 source?.recycle()
                 WorkflowStore.addAction(this, action)
-                WorkflowStore.setStatus(this, "Recorded $actionType")
+                val recordedLabel = action.text?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+                WorkflowStore.setStatus(this, "Recorded $actionType$recordedLabel")
             }
 
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
@@ -213,6 +218,59 @@ class AutomationAccessibilityService : AccessibilityService() {
             label == "home" || label == "home button" -> "HOME"
             else -> null
         }
+    }
+
+    /**
+     * Click events frequently expose a non-clickable TextView as event.source,
+     * even though the real touch target is its clickable parent row. Record the
+     * parent's hit bounds/ID while preserving the best human-readable label.
+     * This makes replay and coordinate fallback target the actual control.
+     */
+    private fun buildClickAction(
+        event: AccessibilityEvent,
+        source: AccessibilityNodeInfo?
+    ): RecordedAction {
+        val label = safeLabel(source, event)
+        var current: AccessibilityNodeInfo? = source?.let { AccessibilityNodeInfo.obtain(it) }
+        var target: AccessibilityNodeInfo? = null
+        repeat(7) {
+            val node = current ?: return@repeat
+            if (node.isClickable || node.isCheckable) {
+                target = AccessibilityNodeInfo.obtain(node)
+                return@repeat
+            }
+            val parent = node.parent
+            node.recycle()
+            current = parent
+        }
+
+        val chosen = target ?: current
+        val bounds = Rect()
+        chosen?.getBoundsInScreen(bounds)
+        val targetText = chosen?.takeIf { !it.isPassword && !it.isEditable }?.text?.toString()
+            ?.trim()?.takeIf { it.isNotBlank() }
+        val targetDescription = chosen?.contentDescription?.toString()?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val bestLabel = label ?: targetText ?: targetDescription
+        val action = RecordedAction(
+            type = "CLICK",
+            packageName = event.packageName?.toString(),
+            text = bestLabel,
+            viewId = chosen?.viewIdResourceName,
+            contentDescription = targetDescription,
+            className = chosen?.className?.toString(),
+            left = bounds.left,
+            top = bounds.top,
+            right = bounds.right,
+            bottom = bounds.bottom,
+            screenWidth = resources.displayMetrics.widthPixels,
+            screenHeight = resources.displayMetrics.heightPixels,
+            scrollDeltaY = 0,
+            timestamp = System.currentTimeMillis()
+        )
+        target?.recycle()
+        if (target == null) current?.recycle()
+        return action
     }
 
     private fun buildAction(
