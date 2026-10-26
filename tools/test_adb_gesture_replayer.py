@@ -302,6 +302,24 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         )
         self.assertTrue(matched)
 
+
+    def test_tap_duration_remainder_preserves_missing_time(self):
+        from adb_gesture_replayer import tap_duration_remainder_ms
+        action = {"gestureKind": "TAP", "gestureDurationMs": 120}
+        self.assertEqual(tap_duration_remainder_ms(action, 35), 85)
+        self.assertEqual(tap_duration_remainder_ms(action, 150), 0)
+
+    def test_tap_duration_remainder_does_not_add_time_for_non_taps(self):
+        from adb_gesture_replayer import tap_duration_remainder_ms
+        self.assertEqual(
+            tap_duration_remainder_ms({"gestureKind": "SWIPE", "gestureDurationMs": 500}, 50),
+            0,
+        )
+
+    def test_tap_duration_remainder_does_not_guess_missing_legacy_duration(self):
+        from adb_gesture_replayer import tap_duration_remainder_ms
+        self.assertEqual(tap_duration_remainder_ms({"gestureKind": "TAP"}, 0), 0)
+
     def test_tap_dry_run_does_not_need_device(self):
         action = {"type": "GESTURE", "gestureKind": "TAP", "gestureStartX": 5000,
                   "gestureStartY": 5000, "gestureEndX": 5000, "gestureEndY": 5000,
