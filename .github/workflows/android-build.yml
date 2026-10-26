@@ -34,6 +34,9 @@ jobs:
       - name: Check Gradle
         run: gradle --version
 
+      - name: Run unit tests
+        run: gradle --no-daemon --stacktrace testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace assembleDebug
 

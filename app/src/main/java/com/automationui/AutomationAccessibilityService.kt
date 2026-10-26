@@ -13,6 +13,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -27,7 +29,13 @@ class AutomationAccessibilityService : AccessibilityService() {
     private var replayActionIndex = 0
     private var replayActionCount = 0
     private var lastForegroundPackage: String? = null
-    private val lastScrollPositions = mutableMapOf<String, Pair<Int, Long>>()
+    private data class ScrollSnapshot(
+        val scrollY: Int,
+        val fromIndex: Int,
+        val toIndex: Int,
+        val timestamp: Long
+    )
+    private val lastScrollPositions = mutableMapOf<String, ScrollSnapshot>()
 
     private val replayReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -60,7 +68,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (WorkflowStore.isRecording(this) && !replaying &&
                 packageName != null && isLauncher(packageName) &&
-                (lastForegroundPackage == null || !isLauncher(lastForegroundPackage!!))
+                lastForegroundPackage != null && !isLauncher(lastForegroundPackage!!)
             ) {
                 WorkflowStore.addAction(this, emptyAction("HOME", null, System.currentTimeMillis()))
                 WorkflowStore.setStatus(this, "Recorded HOME")
@@ -83,6 +91,9 @@ class AutomationAccessibilityService : AccessibilityService() {
             val ownLabel = packageManager.getApplicationLabel(applicationInfo).toString()
             if (clickedLabel.equals(ownLabel, ignoreCase = true)) {
                 WorkflowStore.setRecording(this, false)
+                // Opening the recorder from the launcher is a recording stop gesture,
+                // not a HOME action that should replay at the end of the workflow.
+                WorkflowStore.removeLastActionIfType(this, "HOME")
                 WorkflowStore.setStatus(
                     this,
                     "Recording stopped when Automation UI was reopened; ${WorkflowStore.actions(this).size} actions saved"
@@ -124,7 +135,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                 val isSafeEditableField = source.isEditable && !source.isPassword
                 val value = if (isSafeEditableField) source.text?.toString() else null
                 if (isSafeEditableField && value != null) {
-                    val action = buildAction("SET_TEXT", event, source, value, 0)
+                    val action = buildAction("SET_TEXT", event, source, null, 0, inputValue = value)
                     source.recycle()
                     WorkflowStore.addAction(this, action)
                     WorkflowStore.setStatus(this, "Recorded text input (opt-in)")
@@ -158,28 +169,31 @@ class AutomationAccessibilityService : AccessibilityService() {
         source: AccessibilityNodeInfo?,
         packageName: String?
     ): Int {
-        // On API 28+, use Android's explicit delta. Do not infer a scroll from
-        // scrollY changes because list relayouts can change scrollY without a finger swipe.
-        if (Build.VERSION.SDK_INT >= 28) {
-            return event.scrollDeltaY
-        }
-
-        val key = "${packageName.orEmpty()}|${source?.viewIdResourceName.orEmpty()}|${source?.className?.toString().orEmpty()}"
         val now = System.currentTimeMillis()
+        val key = "${packageName.orEmpty()}|${source?.viewIdResourceName.orEmpty()}|${source?.className?.toString().orEmpty()}"
         val previous = lastScrollPositions[key]
-        lastScrollPositions[key] = event.scrollY to now
+        val current = ScrollSnapshot(event.scrollY, event.fromIndex, event.toIndex, now)
+        lastScrollPositions[key] = current
 
-        // Keep the small cache bounded and discard stale positions.
         if (lastScrollPositions.size > 30) {
-            lastScrollPositions.entries.removeAll { now - it.value.second > 10_000L }
-            while (lastScrollPositions.size > 30) {
-                lastScrollPositions.remove(lastScrollPositions.keys.first())
-            }
+            lastScrollPositions.entries.removeAll { now - it.value.timestamp > 10_000L }
+            while (lastScrollPositions.size > 30) lastScrollPositions.remove(lastScrollPositions.keys.first())
         }
 
-        if (previous != null && now - previous.second <= 10_000L) {
-            val inferred = event.scrollY - previous.first
-            if (inferred != 0) return inferred
+        if (Build.VERSION.SDK_INT >= 28 && event.scrollDeltaY != 0) return event.scrollDeltaY
+
+        // Some apps/OEMs report TYPE_VIEW_SCROLLED with a zero pixel delta.
+        // Infer direction only from a recent event on the same container.
+        if (previous != null && now - previous.timestamp in 1..1_500L) {
+            if (event.fromIndex >= 0 && event.toIndex >= 0 &&
+                previous.fromIndex >= 0 && previous.toIndex >= 0
+            ) {
+                val indexDelta = (event.fromIndex + event.toIndex) -
+                    (previous.fromIndex + previous.toIndex)
+                if (indexDelta != 0) return indexDelta
+            }
+            val yDelta = event.scrollY - previous.scrollY
+            if (yDelta != 0 && kotlin.math.abs(yDelta) <= realDisplaySize().second * 2) return yDelta
         }
         return 0
     }
@@ -256,6 +270,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         val targetDescription = chosen?.contentDescription?.toString()?.trim()
             ?.takeIf { it.isNotBlank() }
         val bestLabel = label ?: targetText ?: targetDescription
+        val display = realDisplaySize()
         val action = RecordedAction(
             type = "CLICK",
             packageName = event.packageName?.toString(),
@@ -267,10 +282,12 @@ class AutomationAccessibilityService : AccessibilityService() {
             top = bounds.top,
             right = bounds.right,
             bottom = bounds.bottom,
-            screenWidth = resources.displayMetrics.widthPixels,
-            screenHeight = resources.displayMetrics.heightPixels,
+            screenWidth = display.first,
+            screenHeight = display.second,
             scrollDeltaY = 0,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            hintText = chosen?.hintText?.toString()?.takeIf { it.isNotBlank() },
+            displayRotation = currentDisplayRotation()
         )
         target?.recycle()
         current?.recycle()
@@ -282,45 +299,58 @@ class AutomationAccessibilityService : AccessibilityService() {
         event: AccessibilityEvent,
         source: AccessibilityNodeInfo?,
         textOverride: String?,
-        scrollDeltaY: Int
+        scrollDeltaY: Int,
+        inputValue: String? = null
     ): RecordedAction {
         val bounds = Rect()
         source?.getBoundsInScreen(bounds)
         val sourceText = source?.takeIf { !it.isPassword && !it.isEditable }?.text?.toString()
-        // Scroll containers often expose changing or child-derived text. Do not
-        // use that as a selector; match by container ID/class and screen bounds.
-        val label = if (type == "SCROLL") textOverride else textOverride ?: sourceText
+        val hint = source?.hintText?.toString()?.takeIf { it.isNotBlank() }
+        val description = source?.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+        val label = when (type) {
+            "SCROLL" -> textOverride
+            "SET_TEXT" -> textOverride ?: hint ?: description
+            else -> textOverride ?: sourceText
+        }
+        val display = realDisplaySize()
         return RecordedAction(
             type = type,
             packageName = event.packageName?.toString(),
             text = label,
             viewId = source?.viewIdResourceName,
-            contentDescription = source?.contentDescription?.toString(),
+            contentDescription = description,
             className = source?.className?.toString(),
             left = bounds.left,
             top = bounds.top,
             right = bounds.right,
             bottom = bounds.bottom,
-            screenWidth = resources.displayMetrics.widthPixels,
-            screenHeight = resources.displayMetrics.heightPixels,
+            screenWidth = display.first,
+            screenHeight = display.second,
             scrollDeltaY = scrollDeltaY,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            inputValue = inputValue,
+            hintText = hint,
+            displayRotation = currentDisplayRotation()
         )
     }
 
-    private fun emptyAction(type: String, packageName: String?, timestamp: Long) = RecordedAction(
-        type = type,
-        packageName = packageName,
-        text = null,
-        viewId = null,
-        contentDescription = null,
-        className = null,
-        left = 0, top = 0, right = 0, bottom = 0,
-        screenWidth = resources.displayMetrics.widthPixels,
-        screenHeight = resources.displayMetrics.heightPixels,
-        scrollDeltaY = 0,
-        timestamp = timestamp
-    )
+    private fun emptyAction(type: String, packageName: String?, timestamp: Long): RecordedAction {
+        val display = realDisplaySize()
+        return RecordedAction(
+            type = type,
+            packageName = packageName,
+            text = null,
+            viewId = null,
+            contentDescription = null,
+            className = null,
+            left = 0, top = 0, right = 0, bottom = 0,
+            screenWidth = display.first,
+            screenHeight = display.second,
+            scrollDeltaY = 0,
+            timestamp = timestamp,
+            displayRotation = currentDisplayRotation()
+        )
+    }
 
     private fun isLauncher(packageName: String): Boolean {
         val name = packageName.lowercase()
@@ -374,8 +404,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         val action = actions[index]
         replayActionIndex = index + 1
         setReplayStatus("Running ${action.type}")
-        val delay = if (index == 0) 0L else
-            (action.timestamp - actions[index - 1].timestamp).coerceIn(250L, 3000L)
+        val delay = ReplayPolicy.delayMs(actions.getOrNull(index - 1)?.timestamp, action.timestamp)
 
         handler.postDelayed({
             if (!replaying) return@postDelayed
@@ -467,32 +496,32 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 waitForNextTarget(nextAction, 350L, 0L, done)
                             }
                         } else if (attempt < 10) {
-                            // Do not tap stale coordinates while a new Settings screen
-                            // is still loading. Wait for the recorded target to appear.
                             handler.postDelayed(
                                 { executeAction(action, attempt + 1, nextAction, done) },
                                 250L
                             )
-                        } else if (hasValidBounds(action)) {
-                            // Some apps (including YouTube on certain versions) emit a
-                            // useful click label in the event but do not expose that label
-                            // on a searchable AccessibilityNodeInfo. After waiting for the
-                            // selector, use the recorded hit area as a last resort, but only
-                            // while the same target app package is still foreground.
+                        } else if (coordinateFallbackAllowed(action)) {
                             val currentRoot = rootInActiveWindow
                             val currentPackage = currentRoot?.packageName?.toString()
+                            val nearby = if (currentRoot != null && currentPackage == action.packageName) {
+                                findNodeNearRecordedBounds(currentRoot, action)
+                            } else null
                             currentRoot?.recycle()
-                            if (currentPackage == action.packageName) {
-                                setReplayStatus("Selector not found; using recorded coordinates")
-                                dispatchTap(action) {
+                            if (nearby != null) {
+                                setReplayStatus("Selector unavailable; matched visible element near recorded target")
+                                val clicked = clickNodeOrParent(nearby)
+                                if (clicked) {
                                     waitForNextTarget(nextAction, 350L, 0L, done)
+                                } else {
+                                    setReplayStatus("Skipped click: nearby element was not actionable")
+                                    done()
                                 }
                             } else {
-                                setReplayStatus("Skipped click: target app is no longer active")
+                                setReplayStatus("Skipped click: target not found; unsafe coordinate fallback blocked")
                                 done()
                             }
                         } else {
-                            setReplayStatus("Skipped click: target not found and no valid coordinates")
+                            setReplayStatus("Skipped click: target not found or display orientation changed")
                             done()
                         }
                     }
@@ -509,11 +538,11 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 done()
                             }
                         } else {
-                            val result = if (node.isPassword) false else {
+                            val result = if (node.isPassword || !node.isEditable) false else {
                                 val args = Bundle().apply {
                                     putCharSequence(
                                         AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                                        action.text ?: ""
+                                        action.inputValue ?: action.text ?: ""
                                     )
                                 }
                                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
@@ -545,17 +574,14 @@ class AutomationAccessibilityService : AccessibilityService() {
                             if (scrolled) {
                                 setReplayStatus("Accessibility scroll applied")
                                 waitForNextTarget(nextAction, 400L, 0L, done)
-                            } else {
-                                // Accessibility scroll actions can fail on custom Settings
-                                // lists, and some events have no source bounds. Fall back to
-                                // a real swipe even when the selector/bounds are unavailable.
-                                setReplayStatus(
-                                    if (hasValidBounds(action)) "Scroll used container swipe fallback"
-                                    else "Scroll used screen swipe fallback"
-                                )
-                                dispatchSwipe(action, action.scrollDeltaY >= 0) {
+                            } else if (coordinateFallbackAllowed(action)) {
+                                setReplayStatus("Accessibility scroll unavailable; using recorded container swipe")
+                                dispatchSwipe(action, ReplayPolicy.scrollForward(action.scrollDeltaY)) {
                                     waitForNextTarget(nextAction, 400L, 0L, done)
                                 }
+                            } else {
+                                setReplayStatus("Skipped scroll: no safe recorded container bounds")
+                                done()
                             }
                         }
                     }
@@ -614,9 +640,7 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun hasSemanticSelector(action: RecordedAction): Boolean =
-        !action.viewId.isNullOrBlank() ||
-            !action.text.isNullOrBlank() ||
-            !action.contentDescription.isNullOrBlank()
+        ReplayPolicy.hasSemanticSelector(action)
 
     private fun hasValidBounds(action: RecordedAction): Boolean =
         action.right > action.left &&
@@ -654,7 +678,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
         }
 
-        val minimumScore = if (hasSemanticSelector(action)) 8 else 1
+        val minimumScore = ReplayPolicy.minimumScore(action)
         if (best == null || bestScore < minimumScore) {
             candidates.forEach { it.recycle() }
             return null
@@ -682,67 +706,94 @@ class AutomationAccessibilityService : AccessibilityService() {
      * use recorded bounds only as a disambiguator.
      */
     private fun scoreNode(node: AccessibilityNodeInfo, action: RecordedAction): Int {
-        if (!node.isVisibleToUser || !node.isEnabled) return Int.MIN_VALUE
+        val display = realDisplaySize()
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        val snapshot = NodeSnapshot(
+            text = node.text?.toString(),
+            contentDescription = node.contentDescription?.toString(),
+            hintText = node.hintText?.toString(),
+            viewId = node.viewIdResourceName,
+            className = node.className?.toString(),
+            visible = node.isVisibleToUser,
+            enabled = node.isEnabled,
+            clickable = node.isClickable || node.isCheckable,
+            editable = node.isEditable,
+            scrollable = node.isScrollable,
+            normalizedCenterX = bounds.exactCenterX() / display.first.toFloat(),
+            normalizedCenterY = bounds.exactCenterY() / display.second.toFloat()
+        )
+        return ReplayPolicy.scoreNode(snapshot, action)
+    }
 
-        var score = 0
-        val expectedId = action.viewId?.takeIf { it.isNotBlank() }
-        val actualId = node.viewIdResourceName
-        val expectedText = action.text?.trim()?.takeIf { it.isNotBlank() }
-        val expectedDescription = action.contentDescription?.trim()?.takeIf { it.isNotBlank() }
-        val actualText = node.text?.toString()?.trim().orEmpty()
-        val actualDescription = node.contentDescription?.toString()?.trim().orEmpty()
+    private fun coordinateFallbackAllowed(action: RecordedAction): Boolean =
+        hasValidBounds(action) && action.displayRotation == currentDisplayRotation()
 
-        // If the recording only has an ID (no label), a different ID is not a
-        // valid candidate. Coordinate proximity alone must not trigger a wrong tap.
-        if (expectedId != null && expectedText == null && expectedDescription == null &&
-            actualId != expectedId
-        ) return Int.MIN_VALUE
+    private fun findNodeNearRecordedBounds(
+        root: AccessibilityNodeInfo,
+        action: RecordedAction
+    ): AccessibilityNodeInfo? {
+        if (!coordinateFallbackAllowed(action)) return null
+        val display = realDisplaySize()
+        val targetX = ((action.left + action.right) / 2f) / action.screenWidth.toFloat()
+        val targetY = ((action.top + action.bottom) / 2f) / action.screenHeight.toFloat()
+        val expectedLabel = action.text?.trim()?.takeIf { it.isNotBlank() }
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectNodes(root, candidates)
+        var best: AccessibilityNodeInfo? = null
+        var bestDistance = Float.MAX_VALUE
 
-        if (expectedId != null) {
-            score += if (actualId == expectedId) 14 else -4
-        }
-
-        if (expectedText != null) {
-            when {
-                actualText.equals(expectedText, ignoreCase = true) -> score += 24
-                actualDescription.equals(expectedText, ignoreCase = true) -> score += 18
-                actualText.contains(expectedText, ignoreCase = true) ||
-                    expectedText.contains(actualText, ignoreCase = true) && actualText.isNotBlank() -> score += 12
-                actualText.isNotBlank() || actualDescription.isNotBlank() -> score -= 24
-                else -> score -= 8
-            }
-        }
-
-        if (expectedDescription != null) {
-            when {
-                actualDescription.equals(expectedDescription, ignoreCase = true) -> score += 24
-                actualText.equals(expectedDescription, ignoreCase = true) -> score += 18
-                actualDescription.isNotBlank() || actualText.isNotBlank() -> score -= 24
-                else -> score -= 8
-            }
-        }
-
-        val expectedClass = action.className?.takeIf { it.isNotBlank() }
-        if (expectedClass != null && node.className?.toString() == expectedClass) score += 2
-        if (node.isClickable) score += 3
-        if (action.type == "SCROLL" && node.isScrollable) score += 10
-
-        if (hasValidBounds(action)) {
-            val recordedX = ((action.left + action.right) / 2f) / action.screenWidth.toFloat()
-            val recordedY = ((action.top + action.bottom) / 2f) / action.screenHeight.toFloat()
+        for (candidate in candidates) {
+            if (!candidate.isVisibleToUser || !candidate.isEnabled) continue
             val bounds = Rect()
-            node.getBoundsInScreen(bounds)
-            val currentWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
-            val currentHeight = resources.displayMetrics.heightPixels.coerceAtLeast(1)
-            val currentX = bounds.exactCenterX() / currentWidth.toFloat()
-            val currentY = bounds.exactCenterY() / currentHeight.toFloat()
-            val dx = recordedX - currentX
-            val dy = recordedY - currentY
+            candidate.getBoundsInScreen(bounds)
+            if (bounds.isEmpty) continue
+            val x = bounds.exactCenterX() / display.first.toFloat()
+            val y = bounds.exactCenterY() / display.second.toFloat()
+            val dx = targetX - x
+            val dy = targetY - y
             val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-            score += (12f - distance * 24f).toInt().coerceIn(-12, 12)
-        }
+            if (distance > 0.045f) continue
 
-        return score
+            val actualLabels = listOfNotNull(
+                candidate.text?.toString(),
+                candidate.contentDescription?.toString(),
+                candidate.hintText?.toString()
+            ).map { it.trim() }.filter { it.isNotBlank() }
+            if (expectedLabel != null && actualLabels.isNotEmpty() &&
+                actualLabels.none {
+                    it.equals(expectedLabel, ignoreCase = true) ||
+                        it.contains(expectedLabel, ignoreCase = true) ||
+                        expectedLabel.contains(it, ignoreCase = true)
+                }
+            ) continue
+
+            val parent = candidate.parent
+            val parentClickable = parent?.isClickable == true
+            parent?.recycle()
+            if (!(candidate.isClickable || candidate.isCheckable || parentClickable)) continue
+            if (distance < bestDistance) {
+                best?.recycle()
+                best = AccessibilityNodeInfo.obtain(candidate)
+                bestDistance = distance
+            }
+        }
+        candidates.forEach { it.recycle() }
+        return best
+    }
+
+    @Suppress("DEPRECATION")
+    private fun realDisplaySize(): Pair<Int, Int> {
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val metrics = DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        return metrics.widthPixels.coerceAtLeast(1) to metrics.heightPixels.coerceAtLeast(1)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentDisplayRotation(): Int {
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        return windowManager.defaultDisplay.rotation
     }
 
     private fun dispatchTap(action: RecordedAction, done: () -> Unit) {
@@ -771,8 +822,9 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun dispatchSwipe(action: RecordedAction, forward: Boolean, done: () -> Unit) {
-        val displayWidth = resources.displayMetrics.widthPixels.coerceAtLeast(2)
-        val displayHeight = resources.displayMetrics.heightPixels.coerceAtLeast(2)
+        val display = realDisplaySize()
+        val displayWidth = display.first.coerceAtLeast(2)
+        val displayHeight = display.second.coerceAtLeast(2)
 
         val x: Float
         val yStart: Float
@@ -826,17 +878,16 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     private fun scaledCenter(action: RecordedAction): Pair<Float, Float>? {
         if (action.right <= action.left || action.bottom <= action.top) return null
-        val width = resources.displayMetrics.widthPixels
-        val height = resources.displayMetrics.heightPixels
-        val x = scale((action.left + action.right) / 2, action.screenWidth, width).coerceIn(1, width - 2)
-        val y = scale((action.top + action.bottom) / 2, action.screenHeight, height).coerceIn(1, height - 2)
+        val display = realDisplaySize()
+        val width = display.first
+        val height = display.second
+        val x = ReplayPolicy.scaleCoordinate((action.left + action.right) / 2, action.screenWidth, width).coerceIn(1, width - 2)
+        val y = ReplayPolicy.scaleCoordinate((action.top + action.bottom) / 2, action.screenHeight, height).coerceIn(1, height - 2)
         return x.toFloat() to y.toFloat()
     }
 
-    private fun scale(value: Int, recordedSize: Int, currentSize: Int): Int {
-        if (recordedSize <= 0) return value
-        return ((value.toFloat() / recordedSize.toFloat()) * currentSize).toInt()
-    }
+    private fun scale(value: Int, recordedSize: Int, currentSize: Int): Int =
+        ReplayPolicy.scaleCoordinate(value, recordedSize, currentSize)
 
     override fun onInterrupt() {
         stopReplay()

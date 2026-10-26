@@ -18,7 +18,11 @@ data class RecordedAction(
     val screenWidth: Int,
     val screenHeight: Int,
     val scrollDeltaY: Int,
-    val timestamp: Long
+    val timestamp: Long,
+    val inputValue: String? = null,
+    val hintText: String? = null,
+    val displayRotation: Int = 0,
+    val schemaVersion: Int = 2
 ) {
     fun toJson() = JSONObject().apply {
         put("type", type)
@@ -30,6 +34,10 @@ data class RecordedAction(
         put("left", left); put("top", top); put("right", right); put("bottom", bottom)
         put("screenWidth", screenWidth); put("screenHeight", screenHeight)
         put("scrollDeltaY", scrollDeltaY); put("timestamp", timestamp)
+        put("inputValue", inputValue ?: JSONObject.NULL)
+        put("hintText", hintText ?: JSONObject.NULL)
+        put("displayRotation", displayRotation)
+        put("schemaVersion", schemaVersion)
     }
 
     companion object {
@@ -43,7 +51,11 @@ data class RecordedAction(
             left = obj.optInt("left"), top = obj.optInt("top"),
             right = obj.optInt("right"), bottom = obj.optInt("bottom"),
             screenWidth = obj.optInt("screenWidth"), screenHeight = obj.optInt("screenHeight"),
-            scrollDeltaY = obj.optInt("scrollDeltaY"), timestamp = obj.optLong("timestamp")
+            scrollDeltaY = obj.optInt("scrollDeltaY"), timestamp = obj.optLong("timestamp"),
+            inputValue = obj.optString("inputValue").takeUnless { it == "null" },
+            hintText = obj.optString("hintText").takeUnless { it == "null" || it.isBlank() },
+            displayRotation = obj.optInt("displayRotation", 0),
+            schemaVersion = obj.optInt("schemaVersion", 1)
         )
     }
 }
@@ -102,10 +114,13 @@ object WorkflowStore {
                 last.left == action.left && last.top == action.top &&
                 last.right == action.right && last.bottom == action.bottom &&
                 sameDirection && action.timestamp - last.timestamp in 0..350) {
-                val merged = if (action.scrollDeltaY == 0 && last.scrollDeltaY != 0) {
-                    action.copy(scrollDeltaY = last.scrollDeltaY)
-                } else action
-                array.put(lastIndex, merged.toJson())
+                val maxDelta = action.screenHeight.coerceAtLeast(1) * 2
+                val mergedDelta = when {
+                    action.scrollDeltaY == 0 -> last.scrollDeltaY
+                    last.scrollDeltaY == 0 -> action.scrollDeltaY
+                    else -> (last.scrollDeltaY + action.scrollDeltaY).coerceIn(-maxDelta, maxDelta)
+                }
+                array.put(lastIndex, action.copy(scrollDeltaY = mergedDelta).toJson())
                 prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
                 return
             }
@@ -117,6 +132,19 @@ object WorkflowStore {
     }
 
     fun clear(context: Context) { prefs(context).edit().putString(KEY_ACTIONS, "[]").apply() }
+
+    fun removeLastActionIfType(context: Context, type: String): Boolean {
+        val array = runCatching {
+            JSONArray(prefs(context).getString(KEY_ACTIONS, "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        if (array.length() == 0) return false
+        val lastIndex = array.length() - 1
+        val lastType = runCatching { array.getJSONObject(lastIndex).optString("type") }.getOrNull()
+        if (lastType != type) return false
+        array.remove(lastIndex)
+        prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
+        return true
+    }
 
     fun replayLogs(context: Context): List<String> {
         val array = runCatching {

@@ -1,53 +1,31 @@
-# Automation UI — Android Record & Replay
+# Automation UI
 
-Native Android prototype for recording accessibility-visible UI actions and replaying supported actions on the same phone.
+An Android Accessibility-based Record & Replay prototype. It records actions exposed by Android Accessibility and replays supported UI actions on the same device.
 
-## Build status and APK
+## Architecture
 
-Every push to `main` runs the **Android APK Build** GitHub Actions workflow. When the workflow succeeds, it uploads `automation-ui-debug-apk` as an artifact.
+- Recorder: accessible click events, opt-in non-password text changes, scroll events, package, element selectors, clickable-parent bounds, display size and rotation.
+- Workflow model: versioned JSON actions persisted locally; older records remain readable.
+- Replay policy: ranks visible/enabled UI nodes using resource ID, text, content description, hint, class, editability, scrollability and normalized screen position.
+- Replay controller: prefers Accessibility actions, waits for targets, applies bounded retries, and logs fallback/skip reasons.
+- Verification: each replay action and failure is recorded in Replay diagnostics.
 
-1. Open [Actions → Android APK Build](https://github.com/mahirlabib478-del/automation-ui/actions/workflows/android-build.yml).
-2. Open the latest successful run.
-3. Download the `automation-ui-debug-apk` artifact and unzip it.
-4. Install `app-debug.apk` on your Android phone. If Android asks, allow installation from the source you used.
+## Build and tests
 
-## Open in Android Studio
+Run `gradle --no-daemon testDebugUnitTest` and `gradle --no-daemon assembleDebug`.
 
-- JDK 17
-- Android SDK Platform 35
-- Gradle 8.9 (the CI workflow installs this version)
-- Android Studio with Kotlin and Jetpack Compose support
+GitHub Actions runs unit tests before building the debug APK.
 
-Open the repository folder in Android Studio and sync the project. The CI workflow builds with `gradle --no-daemon assembleDebug`.
+## ADB device smoke test
 
-## Enable and test
+With Android Platform Tools installed and USB debugging authorized, run:
 
-1. Install and open **Automation UI**.
-2. Tap **Enable Accessibility Service** and enable Automation UI in Android Accessibility settings.
-3. Return to the app and leave **Record text input** disabled unless you explicitly need text-field replay.
-4. Tap **Record**, switch to a non-sensitive test app, and perform a short sequence of clicks and scrolls.
-5. Return to Automation UI and tap **Stop**. Actions are stored locally on the device.
-6. Return to the same initial screen and tap **Replay**. Use **Stop replay immediately** to cancel playback.
+    bash tools/adb-device-smoke.sh app/build/outputs/apk/debug/app-debug.apk
 
-## Current capabilities
+The script captures Android version, Accessibility diagnostics, logcat and a screenshot. A successful install/launch is not proof that arbitrary workflows passed; those still require repeatable on-device tests.
 
-- Records accessibility-visible clicks and their UI selectors/bounds.
-- Can record scroll events and replay by accessibility scroll actions or a coordinate swipe fallback.
-- Can replay clicks using resource ID/text selectors with coordinate fallback.
-- Can replay Home transitions observed through launcher window changes and selected system Back/Home buttons when Android exposes those events.
-- Optional text-field recording is off by default and skips password fields.
-- Local action storage and live action/status list.
+## Platform limits
 
-## Limitations — read before use
+A normal Android app cannot universally observe every raw touch in every other app. Accessibility exposes semantic clicks and some scroll events, but arbitrary gestures, notification shade interactions, secure screens and OEM-specific system UI may be unavailable. ADB improves diagnostics and some test flows, but is not a permanent privileged API for the installed app. MediaProjection-based visual verification and a separately permissioned ADB touch-capture companion remain follow-up work, not features claimed as implemented here.
 
-This is an MVP, not a universal phone macro recorder. Android does not expose every raw touch from other apps to a normal application. Therefore arbitrary swipes, notification-shade gestures, every Back action, lock screens, protected windows, permission dialogs and some OEM-specific Settings screens may not be captured or replayable. Coordinate fallback depends on the same device layout and screen state. Some apps deliberately restrict accessibility access.
-
-Use only on your own device and for permitted workflows. Do not record passwords, OTPs, banking details or private information. The optional text recording feature is disabled by default. Accessibility access is powerful; disable the service when you are not using the app.
-
-## Technology
-
-- Kotlin
-- Jetpack Compose
-- Android AccessibilityService / AccessibilityNodeInfo
-- SharedPreferences JSON storage
-- GitHub Actions debug APK build
+Text recording is opt-in and password fields are excluded. Do not use workflows to bypass authentication or protected system controls.
