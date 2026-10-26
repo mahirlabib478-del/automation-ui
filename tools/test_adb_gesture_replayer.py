@@ -185,6 +185,12 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         self.assertEqual(action_coordinates(action, 720, 1600, 360, 800),
                          (36, 639, 36, 160))
 
+    def test_legacy_swipe_with_only_one_path_point_is_rejected(self):
+        action = {"type": "GESTURE", "gestureKind": "SWIPE",
+                  "gesturePoints": [{"x": 1000, "y": 5000}]}
+        with self.assertRaisesRegex(ValueError, "fewer than two usable path points"):
+            action_coordinates(action, 720, 1600, 720, 1600)
+
     def test_legacy_swipe_without_endpoints_or_path_is_rejected(self):
         action = {
             "type": "GESTURE", "gestureKind": "SWIPE",
