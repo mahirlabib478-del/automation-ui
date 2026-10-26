@@ -167,12 +167,17 @@ def action_coordinates(action: dict, recorded_width: int, recorded_height: int,
     def to_pixel(value: float, size: int) -> int:
         return int(round(max(0.0, min(1.0, value)) * max(0, size - 1)))
 
-    return (
+    coordinates = (
         to_pixel(sxn, current_width),
         to_pixel(syn, current_height),
         to_pixel(exn, current_width),
         to_pixel(eyn, current_height),
     )
+    if kind == "SWIPE" and coordinates[0] == coordinates[2] and coordinates[1] == coordinates[3]:
+        raise ValueError(
+            "SWIPE start and end resolve to the same pixel. ADB shell input cannot safely replay a closed/looping path as a straight swipe."
+        )
+    return coordinates
 
 
 def require_gesture_actions(actions: list[Any]) -> list[dict]:
