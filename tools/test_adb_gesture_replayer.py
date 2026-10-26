@@ -90,6 +90,44 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         self.assertFalse(matched)
         self.assertIn("hierarchy is unavailable", reason)
 
+    def test_focused_window_match_overrides_transient_resumed_activity_mismatch(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android",
+             "focusedWindowPackage": "com.instagram.android"},
+            {"foregroundPackage": "com.google.android.gms",
+             "focusedWindowPackage": "com.instagram.android"}
+        )
+        self.assertTrue(matched)
+        self.assertIn("screen state matches", reason)
+
+    def test_focused_window_mismatch_still_stops_when_foreground_matches(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android",
+             "focusedWindowPackage": "com.instagram.android"},
+            {"foregroundPackage": "com.instagram.android",
+             "focusedWindowPackage": "com.transsion.hilauncher"}
+        )
+        self.assertFalse(matched)
+        self.assertIn("focused window differs", reason)
+
+    def test_ui_focused_window_match_overrides_transient_ui_activity_mismatch(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android",
+             "focusedWindowPackage": "com.instagram.android",
+             "uiSnapshotReliable": True,
+             "uiForegroundPackage": "com.instagram.android",
+             "uiFocusedWindowPackage": "com.instagram.android",
+             "visibleTexts": ["Home", "Search", "Profile"]},
+            {"foregroundPackage": "com.google.android.gms",
+             "focusedWindowPackage": "com.instagram.android",
+             "uiSnapshotReliable": True,
+             "uiForegroundPackage": "com.google.android.gms",
+             "uiFocusedWindowPackage": "com.instagram.android",
+             "visibleTexts": ["Home", "Search", "Profile"]}
+        )
+        self.assertTrue(matched)
+        self.assertIn("screen state matches", reason)
+
     def test_state_matches_same_package(self):
         matched, _ = state_matches(
             {"foregroundPackage": "com.example", "focusedWindowPackage": "com.example"},
