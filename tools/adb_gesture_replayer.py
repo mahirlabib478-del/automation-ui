@@ -104,16 +104,23 @@ def normalize_text(value: str) -> str:
 
 
 def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple[bool, str]:
-    for key, label in (
-        ("foregroundPackage", "foreground app"),
-        ("focusedWindowPackage", "focused window"),
-    ):
-        wanted = expected.get(key)
-        got = actual.get(key)
-        if wanted and not got:
-            return False, f"cannot verify {label}; current identity is unavailable"
-        if wanted and got and wanted != got:
-            return False, f"{label} differs (recorded={wanted}, current={got})"
+    # Prefer the focused window as the visible touch target. Android can report a
+    # transient/resumed service activity (for example Play services) while the
+    # expected app still owns the focused window.
+    expected_window = expected.get("focusedWindowPackage")
+    actual_window = actual.get("focusedWindowPackage")
+    if expected_window and actual_window:
+        if expected_window != actual_window:
+            return False, f"focused window differs (recorded={expected_window}, current={actual_window})"
+    else:
+        expected_package = expected.get("foregroundPackage")
+        actual_package = actual.get("foregroundPackage")
+        if expected_package and not actual_package:
+            return False, "cannot verify foreground app; current identity is unavailable"
+        if expected_package and actual_package and expected_package != actual_package:
+            return False, f"foreground app differs (recorded={expected_package}, current={actual_package})"
+        if expected_window and not actual_window and not actual_package:
+            return False, "cannot verify focused window or foreground app; current identity is unavailable"
 
     expected_texts = expected.get("visibleTexts") or []
     actual_texts = actual.get("visibleTexts") or []
@@ -127,16 +134,16 @@ def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple
                 return False, "recorded UI text exists but current UI hierarchy is unavailable"
             if not actual.get("uiSnapshotReliable"):
                 return False, "current UI hierarchy snapshot is not reliable; app/window may have changed during capture"
-            expected_ui_package = expected.get("uiForegroundPackage")
-            actual_ui_package = actual.get("uiForegroundPackage")
-            if expected_ui_package and actual_ui_package:
-                if expected_ui_package != actual_ui_package:
-                    return False, f"UI hierarchy belongs to a different app (recorded={expected_ui_package}, current={actual_ui_package})"
-            else:
-                expected_ui_window = expected.get("uiFocusedWindowPackage")
-                actual_ui_window = actual.get("uiFocusedWindowPackage")
-                if expected_ui_window and actual_ui_window and expected_ui_window != actual_ui_window:
+            expected_ui_window = expected.get("uiFocusedWindowPackage")
+            actual_ui_window = actual.get("uiFocusedWindowPackage")
+            if expected_ui_window and actual_ui_window:
+                if expected_ui_window != actual_ui_window:
                     return False, f"UI hierarchy belongs to a different focused window (recorded={expected_ui_window}, current={actual_ui_window})"
+            else:
+                expected_ui_package = expected.get("uiForegroundPackage")
+                actual_ui_package = actual.get("uiForegroundPackage")
+                if expected_ui_package and actual_ui_package and expected_ui_package != actual_ui_package:
+                    return False, f"UI hierarchy belongs to a different app (recorded={expected_ui_package}, current={actual_ui_package})"
             wanted = {normalize_text(str(x)) for x in expected_texts if str(x).strip()}
             got = {normalize_text(str(x)) for x in actual_texts if str(x).strip()}
             overlap = len(wanted & got)
