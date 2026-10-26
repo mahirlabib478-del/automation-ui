@@ -10,6 +10,7 @@ phone, then press Ctrl+C on the computer and import/merge the JSON in the app.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -17,7 +18,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -192,6 +195,154 @@ def normalize_pixel(value: float, size: int) -> int:
     return int(round(max(0.0, min(float(size - 1), value)) / float(size - 1) * 10_000))
 
 
+def parse_component(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract package and activity/window component from dumpsys text."""
+    match = re.search(r"\bu\d+\s+([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)", text)
+    if not match:
+        return None, None
+    package, activity = match.group(1), match.group(2)
+    if activity.startswith("."):
+        activity = package + activity
+    return package, activity
+
+
+def parse_foreground_activity(output: str) -> tuple[Optional[str], Optional[str]]:
+    preferred = []
+    for line in output.splitlines():
+        if "mResumedActivity" in line or "topResumedActivity" in line or "Resumed:" in line:
+            preferred.append(line)
+    for line in preferred + output.splitlines():
+        package, activity = parse_component(line)
+        if package:
+            return package, activity
+    return None, None
+
+
+def parse_focused_window(output: str) -> tuple[Optional[str], Optional[str]]:
+    preferred = []
+    for line in output.splitlines():
+        if "mCurrentFocus" in line or "mFocusedWindow" in line or "Current Focus" in line:
+            preferred.append(line)
+    for line in preferred:
+        package, window = parse_component(line)
+        if package:
+            return package, window
+    return None, None
+
+
+def parse_visible_texts(xml_text: str, limit: int = 80) -> list[str]:
+    values: list[str] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except (ET.ParseError, ValueError):
+        return values
+    for node in root.iter():
+        for key in ("text", "content-desc"):
+            value = (node.attrib.get(key) or "").strip()
+            if value and value not in values:
+                values.append(value[:180])
+                if len(values) >= limit:
+                    return values
+    return values
+
+
+def read_device_uptime_ms(serial: Optional[str]) -> Optional[int]:
+    try:
+        return int(float(run_adb(serial, "shell", "cat", "/proc/uptime").split()[0]) * 1000)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def capture_foreground_state(serial: Optional[str], capture_ui_hierarchy: bool = False) -> dict:
+    """Capture best-effort foreground/window state without injecting phone input."""
+    activities = ""
+    windows = ""
+    try:
+        activities = run_adb(serial, "shell", "dumpsys", "activity", "activities")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        windows = run_adb(serial, "shell", "dumpsys", "window")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    foreground_package, foreground_activity = parse_foreground_activity(activities)
+    focused_package, focused_window = parse_focused_window(windows)
+    state = {
+        "foregroundPackage": foreground_package,
+        "foregroundActivity": foreground_activity,
+        "focusedWindowPackage": focused_package,
+        "focusedWindow": focused_window,
+        "deviceUptimeMs": read_device_uptime_ms(serial),
+        "visibleTexts": [],
+        "uiSnapshotReliable": False,
+    }
+    if capture_ui_hierarchy:
+        try:
+            run_adb(serial, "shell", "uiautomator", "dump", "--compressed", "/sdcard/adb-automation-window.xml")
+            xml_text = run_adb(serial, "shell", "cat", "/sdcard/adb-automation-window.xml")
+            state["visibleTexts"] = parse_visible_texts(xml_text)
+            state["uiSnapshotReliable"] = bool(state["visibleTexts"])
+            state["uiCapturedUptimeMs"] = read_device_uptime_ms(serial)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            state["uiSnapshotReliable"] = False
+    return state
+
+
+class ScreenStateObserver:
+    """Poll foreground/window state off the input-reading thread and attach pre-touch snapshots."""
+    def __init__(self, serial: Optional[str], capture_ui_hierarchy: bool = False, interval: float = 0.45):
+        self.serial = serial
+        self.capture_ui_hierarchy = capture_ui_hierarchy
+        self.interval = interval
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.history: list[dict] = []
+        self.thread = threading.Thread(target=self._run, name="adb-screen-state-observer", daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.thread.join(timeout=8)
+
+    def _run(self):
+        next_ui = 0.0
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            include_ui = self.capture_ui_hierarchy and started >= next_ui
+            state = capture_foreground_state(self.serial, capture_ui_hierarchy=include_ui)
+            state["sampledAtHostMs"] = int(time.time() * 1000)
+            if include_ui:
+                next_ui = time.monotonic() + 1.5
+            with self.lock:
+                self.history.append(state)
+                if len(self.history) > 500:
+                    del self.history[:-500]
+            elapsed = time.monotonic() - started
+            self.stop_event.wait(max(0.05, self.interval - elapsed))
+
+    def snapshot_before(self, touch_uptime_ms: int) -> Optional[dict]:
+        with self.lock:
+            candidates = [
+                state for state in self.history
+                if isinstance(state.get("deviceUptimeMs"), int)
+                and state["deviceUptimeMs"] <= touch_uptime_ms
+            ]
+            if not candidates:
+                return None
+            state = copy.deepcopy(candidates[-1])
+        age = max(0, touch_uptime_ms - int(state["deviceUptimeMs"]))
+        state["sampleAgeMs"] = age
+        state["stateSnapshotReliable"] = age <= 1_000
+        ui_uptime = state.get("uiCapturedUptimeMs")
+        state["uiSnapshotReliable"] = bool(
+            state.get("visibleTexts") and isinstance(ui_uptime, int)
+            and 0 <= touch_uptime_ms - ui_uptime <= 2_500
+        )
+        return state
+
+
 class GestureRecorder:
     def __init__(
         self,
@@ -222,6 +373,8 @@ class GestureRecorder:
         self.last_point: Optional[tuple[float, float]] = None
         self.raw_x: Optional[int] = None
         self.raw_y: Optional[int] = None
+        self.last_end_time: Optional[float] = None
+        self.state_provider = None
 
     def _map_point(self) -> Optional[tuple[float, float]]:
         if self.raw_x is None or self.raw_y is None:
@@ -277,7 +430,10 @@ class GestureRecorder:
                 kind = "LONG_PRESS"
             else:
                 kind = "TAP"
-            self.actions.append(self._action(kind, sx, sy, ex, ey, duration_ms, timestamp))
+            start_time = self.start_time
+            action = self._action(kind, sx, sy, ex, ey, duration_ms, start_time, timestamp)
+            self.actions.append(action)
+            self.last_end_time = timestamp
         self.active = False
         self.invalid_multitouch = False
         self.active_slot = None
@@ -289,12 +445,15 @@ class GestureRecorder:
 
     def _action(
         self, kind: str, sx: float, sy: float, ex: float, ey: float,
-        duration_ms: int, end_time: float
+        duration_ms: int, start_time: float, end_time: float
     ) -> dict:
         width, height = self.width, self.height
         sx_i, sy_i = int(round(sx)), int(round(sy))
         ex_i, ey_i = int(round(ex)), int(round(ey))
         timestamp = int(round((end_time * 1000) + self.epoch_offset_ms))
+        start_timestamp = int(round((start_time * 1000) + self.epoch_offset_ms))
+        gap_before_ms = 0 if self.last_end_time is None else max(0, int(round((start_time - self.last_end_time) * 1000)))
+        state_before = self.state_provider(int(round(start_time * 1000))) if self.state_provider else None
         return {
             "type": "GESTURE",
             "packageName": None,
@@ -310,10 +469,14 @@ class GestureRecorder:
             "screenHeight": height,
             "scrollDeltaY": ey_i - sy_i,
             "timestamp": timestamp,
+            "startTimestamp": start_timestamp,
+            "startUptimeMs": int(round(start_time * 1000)),
+            "gapBeforeMs": gap_before_ms,
+            "screenStateBefore": state_before,
             "inputValue": None,
             "hintText": None,
             "displayRotation": self.rotation,
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "gestureKind": kind,
             "gestureStartX": normalize_pixel(sx, width),
             "gestureStartY": normalize_pixel(sy, height),
@@ -366,7 +529,7 @@ class GestureRecorder:
 def workflow_payload(actions: list[dict], device: InputDevice, width: int, height: int, rotation: int) -> dict:
     return {
         "format": "adb-gesture-capture",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "source": "adb-getevent",
         "inputDevice": {"path": device.path, "name": device.name},
         "screen": {"width": width, "height": height, "rotation": rotation},
@@ -390,6 +553,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--min-swipe-px", type=float, default=35.0, help="Minimum movement to classify a swipe")
     parser.add_argument("--long-press-ms", type=int, default=650, help="Minimum low-motion duration for long press")
     parser.add_argument("--rotation", type=int, choices=(0, 1, 2, 3), help="Override rotation if detection is unavailable")
+    parser.add_argument("--no-state-capture", action="store_true", help="Disable foreground/window state snapshots")
+    parser.add_argument("--capture-ui-hierarchy", action="store_true", help="Also sample visible UI text with uiautomator; slower and may not work on every OEM")
     args = parser.parse_args(argv)
 
     try:
@@ -421,9 +586,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             long_press_ms=args.long_press_ms,
         )
         output_path = Path(args.output)
+        state_observer = None
+        if not args.no_state_capture:
+            state_observer = ScreenStateObserver(args.serial, capture_ui_hierarchy=args.capture_ui_hierarchy)
+            recorder.state_provider = state_observer.snapshot_before
+            state_observer.start()
+        output_lock = threading.Lock()
         print(f"Device: {device.name} ({device.path})")
         print(f"Display: {recorder.width}x{recorder.height}, rotation={rotation}")
         print(f"Recording raw touch gestures to {output_path}. Use the phone; press Ctrl+C here to stop.")
+        if state_observer:
+            print("Foreground/window snapshots are enabled." + (" UI text snapshots are enabled." if args.capture_ui_hierarchy else " Use --capture-ui-hierarchy for popup/text matching."))
         process = subprocess.Popen(
             adb_command(args.serial, "shell", "getevent", "-lt", device.path),
             stdout=subprocess.PIPE,
@@ -442,12 +615,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 recorder.feed(line)
                 if len(recorder.actions) > before:
                     action = recorder.actions[-1]
+                    snapshot = action.get("screenStateBefore")
+                    if snapshot is not None:
+                        action["stateSnapshotReliable"] = bool(snapshot.get("stateSnapshotReliable"))
+                        action["uiSnapshotReliable"] = bool(snapshot.get("uiSnapshotReliable"))
                     atomic_write(output_path, workflow_payload(
                         recorder.actions, device, recorder.width, recorder.height, rotation
                     ))
+                    gap = action.get("gapBeforeMs", 0)
                     print("Captured " + action["gestureKind"] + " (" +
-                          str(action["gestureDurationMs"]) + " ms), total=" +
-                          str(len(recorder.actions)))
+                          str(action["gestureDurationMs"]) + " ms), gap-before=" +
+                          str(gap) + " ms, total=" + str(len(recorder.actions)))
             code = process.wait()
             if code != 0:
                 raise RuntimeError(f"getevent exited with status {code}; check shell access permissions.")
@@ -461,6 +639,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+        if state_observer:
+            state_observer.stop()
         atomic_write(output_path, workflow_payload(
             recorder.actions, device, recorder.width, recorder.height, rotation
         ))
