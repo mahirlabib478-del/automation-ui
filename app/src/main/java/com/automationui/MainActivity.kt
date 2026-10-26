@@ -145,6 +145,38 @@ class MainActivity : ComponentActivity() {
                     }
 
                     OutlinedButton(
+                        onClick = {
+                            if (WorkflowStore.isRecording(this@MainActivity)) {
+                                WorkflowStore.addAction(
+                                    this@MainActivity,
+                                    RecordedAction(
+                                        type = "OPEN_SETTINGS",
+                                        packageName = "com.android.settings",
+                                        text = null,
+                                        viewId = null,
+                                        contentDescription = null,
+                                        className = null,
+                                        left = 0,
+                                        top = 0,
+                                        right = 0,
+                                        bottom = 0,
+                                        screenWidth = resources.displayMetrics.widthPixels,
+                                        screenHeight = resources.displayMetrics.heightPixels,
+                                        scrollDeltaY = 0,
+                                        timestamp = System.currentTimeMillis()
+                                    )
+                                )
+                                WorkflowStore.setStatus(
+                                    this@MainActivity,
+                                    "Recorded OPEN_SETTINGS; opening Android Settings"
+                                )
+                            }
+                            startActivity(Intent(Settings.ACTION_SETTINGS))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Open Android Settings (record this step)") }
+
+                    OutlinedButton(
                         onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Enable Accessibility Service") }
