@@ -27,11 +27,15 @@ DEVICE_HEADER = re.compile(r"^add device \d+:\s*(/dev/input/\S+)", re.MULTILINE)
 EVENT_LINE = re.compile(
     r"^\[\s*(?P<time>\d+(?:\.\d+)?)\]\s+"
     r"(?:(?P<device>/dev/input/\S+):\s+)?"
-    r"(?P<event>\S+)\s+(?P<code>\S+)\s+(?P<value>[0-9a-fA-F-]+)"
+    r"(?P<event>\S+)\s+(?P<code>\S+)\s+(?P<value>[0-9a-fA-F-]+|DOWN|UP)"
 )
 
 
 def parse_value(raw: str) -> int:
+    if raw == "DOWN":
+        return 1
+    if raw == "UP":
+        return 0
     if raw.startswith("-"):
         return int(raw, 10)
     value = int(raw, 16)

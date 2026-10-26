@@ -43,6 +43,10 @@ add device 2: /dev/input/event2
     def test_parses_getevent_line_without_device_prefix(self):
         event = parse_event_line("[ 130436.126528] EV_ABS ABS_MT_POSITION_X 000006a6")
         self.assertEqual(event, (130436.126528, None, "EV_ABS", "ABS_MT_POSITION_X", 0x06A6))
+        key_event = parse_event_line("[ 130436.126528] EV_KEY BTN_TOUCH DOWN")
+        self.assertEqual(key_event, (130436.126528, None, "EV_KEY", "BTN_TOUCH", 1))
+        release_event = parse_event_line("[ 130436.126528] EV_KEY BTN_TOUCH UP")
+        self.assertEqual(release_event, (130436.126528, None, "EV_KEY", "BTN_TOUCH", 0))
 
     def test_parses_display_size(self):
         self.assertEqual(parse_display_size("Physical size: 1080x2400"), (1080, 2400))
