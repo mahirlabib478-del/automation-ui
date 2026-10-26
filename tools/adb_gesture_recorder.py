@@ -253,8 +253,8 @@ def read_device_uptime_ms(serial: Optional[str]) -> Optional[int]:
         return None
 
 
-def capture_foreground_state(serial: Optional[str], capture_ui_hierarchy: bool = False) -> dict:
-    """Capture best-effort foreground/window state without injecting phone input."""
+def capture_foreground_state(serial: Optional[str]) -> dict:
+    """Capture foreground app/window only; keep this path fast and independent of UI dumps."""
     activities = ""
     windows = ""
     try:
@@ -267,54 +267,67 @@ def capture_foreground_state(serial: Optional[str], capture_ui_hierarchy: bool =
         pass
     foreground_package, foreground_activity = parse_foreground_activity(activities)
     focused_package, focused_window = parse_focused_window(windows)
-    state = {
+    return {
         "foregroundPackage": foreground_package,
         "foregroundActivity": foreground_activity,
         "focusedWindowPackage": focused_package,
         "focusedWindow": focused_window,
         "deviceUptimeMs": read_device_uptime_ms(serial),
+        "sampledAtHostMonotonicMs": int(time.monotonic() * 1000),
         "visibleTexts": [],
         "uiSnapshotReliable": False,
     }
-    if capture_ui_hierarchy:
-        try:
-            run_adb(serial, "shell", "uiautomator", "dump", "--compressed", "/sdcard/adb-automation-window.xml")
-            xml_text = run_adb(serial, "shell", "cat", "/sdcard/adb-automation-window.xml")
-            state["visibleTexts"] = parse_visible_texts(xml_text)
-            state["uiSnapshotReliable"] = bool(state["visibleTexts"])
-            state["uiCapturedUptimeMs"] = read_device_uptime_ms(serial)
-        except (OSError, subprocess.SubprocessError, ValueError):
-            state["uiSnapshotReliable"] = False
-    return state
+
+
+def capture_visible_ui_texts(serial: Optional[str]) -> dict:
+    """Capture UI hierarchy separately so a slow dump cannot stall foreground sampling."""
+    try:
+        run_adb(serial, "shell", "uiautomator", "dump", "--compressed", "/sdcard/adb-automation-window.xml")
+        xml_text = run_adb(serial, "shell", "cat", "/sdcard/adb-automation-window.xml")
+        visible_texts = parse_visible_texts(xml_text)
+        return {
+            "visibleTexts": visible_texts,
+            "uiCapturedHostMonotonicMs": int(time.monotonic() * 1000),
+            "uiSnapshotReliable": bool(visible_texts),
+        }
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {
+            "visibleTexts": [],
+            "uiCapturedHostMonotonicMs": int(time.monotonic() * 1000),
+            "uiSnapshotReliable": False,
+        }
 
 
 class ScreenStateObserver:
-    """Poll foreground/window state off the input-reading thread and attach pre-touch snapshots."""
-    def __init__(self, serial: Optional[str], capture_ui_hierarchy: bool = False, interval: float = 0.45):
+    """Capture foreground snapshots and optional UI text snapshots on independent threads."""
+    def __init__(self, serial: Optional[str], capture_ui_hierarchy: bool = False,
+                 interval: float = 0.4, ui_interval: float = 1.5):
         self.serial = serial
         self.capture_ui_hierarchy = capture_ui_hierarchy
         self.interval = interval
+        self.ui_interval = ui_interval
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.history: list[dict] = []
+        self.ui_history: list[dict] = []
         self.thread = threading.Thread(target=self._run, name="adb-screen-state-observer", daemon=True)
+        self.ui_thread = threading.Thread(target=self._run_ui, name="adb-ui-hierarchy-observer", daemon=True)
 
     def start(self):
         self.thread.start()
+        if self.capture_ui_hierarchy:
+            self.ui_thread.start()
 
     def stop(self):
         self.stop_event.set()
         self.thread.join(timeout=8)
+        if self.capture_ui_hierarchy:
+            self.ui_thread.join(timeout=8)
 
     def _run(self):
-        next_ui = 0.0
         while not self.stop_event.is_set():
             started = time.monotonic()
-            include_ui = self.capture_ui_hierarchy and started >= next_ui
-            state = capture_foreground_state(self.serial, capture_ui_hierarchy=include_ui)
-            state["sampledAtHostMs"] = int(time.time() * 1000)
-            if include_ui:
-                next_ui = time.monotonic() + 1.5
+            state = capture_foreground_state(self.serial)
             with self.lock:
                 self.history.append(state)
                 if len(self.history) > 500:
@@ -322,26 +335,49 @@ class ScreenStateObserver:
             elapsed = time.monotonic() - started
             self.stop_event.wait(max(0.05, self.interval - elapsed))
 
-    def snapshot_before(self, touch_uptime_ms: int) -> Optional[dict]:
+    def _run_ui(self):
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            state = capture_visible_ui_texts(self.serial)
+            with self.lock:
+                self.ui_history.append(state)
+                if len(self.ui_history) > 100:
+                    del self.ui_history[:-100]
+            elapsed = time.monotonic() - started
+            self.stop_event.wait(max(0.1, self.ui_interval - elapsed))
+
+    def snapshot_before(self, touch_host_monotonic_ms: int) -> Optional[dict]:
+        """Return only samples completed before this touch, matched on the host monotonic clock."""
         with self.lock:
             candidates = [
                 state for state in self.history
-                if isinstance(state.get("deviceUptimeMs"), int)
-                and state["deviceUptimeMs"] <= touch_uptime_ms
+                if isinstance(state.get("sampledAtHostMonotonicMs"), int)
+                and state["sampledAtHostMonotonicMs"] <= touch_host_monotonic_ms
             ]
             if not candidates:
                 return None
             state = copy.deepcopy(candidates[-1])
-        age = max(0, touch_uptime_ms - int(state["deviceUptimeMs"]))
-        state["sampleAgeMs"] = age
-        state["stateSnapshotReliable"] = age <= 1_000
-        ui_uptime = state.get("uiCapturedUptimeMs")
-        state["uiSnapshotReliable"] = bool(
-            state.get("visibleTexts") and isinstance(ui_uptime, int)
-            and 0 <= touch_uptime_ms - ui_uptime <= 2_500
-        )
-        return state
+            ui_candidates = [
+                item for item in self.ui_history
+                if isinstance(item.get("uiCapturedHostMonotonicMs"), int)
+                and item["uiCapturedHostMonotonicMs"] <= touch_host_monotonic_ms
+                and item.get("visibleTexts")
+            ]
+            ui_state = copy.deepcopy(ui_candidates[-1]) if ui_candidates else None
 
+        age = max(0, touch_host_monotonic_ms - int(state["sampledAtHostMonotonicMs"]))
+        state["sampleAgeMs"] = age
+        has_identity = bool(state.get("foregroundPackage") or state.get("focusedWindowPackage"))
+        state["stateSnapshotReliable"] = age <= 1_200 and has_identity
+        state["visibleTexts"] = []
+        state["uiSnapshotReliable"] = False
+        if ui_state:
+            ui_age = max(0, touch_host_monotonic_ms - int(ui_state["uiCapturedHostMonotonicMs"]))
+            state["visibleTexts"] = ui_state.get("visibleTexts", [])
+            state["uiCapturedHostMonotonicMs"] = ui_state["uiCapturedHostMonotonicMs"]
+            state["uiSampleAgeMs"] = ui_age
+            state["uiSnapshotReliable"] = bool(state["visibleTexts"]) and ui_age <= 2_500
+        return state
 
 class GestureRecorder:
     def __init__(
@@ -369,6 +405,7 @@ class GestureRecorder:
         self.active_slot: Optional[int] = None
         self.current_slot = 0
         self.start_time: Optional[float] = None
+        self.start_host_monotonic_ms: Optional[int] = None
         self.start_point: Optional[tuple[float, float]] = None
         self.last_point: Optional[tuple[float, float]] = None
         self.raw_x: Optional[int] = None
@@ -400,6 +437,7 @@ class GestureRecorder:
         self.invalid_multitouch = False
         self.active_slot = self.current_slot
         self.start_time = timestamp
+        self.start_host_monotonic_ms = int(time.monotonic() * 1000)
         self.start_point = None
         self.last_point = None
         self.raw_x = None
@@ -446,9 +484,10 @@ class GestureRecorder:
             else:
                 kind = "TAP"
             start_time = self.start_time
+            host_start_ms = self.start_host_monotonic_ms
             action = self._action(
                 kind, sx, sy, ex, ey, duration_ms, start_time, timestamp,
-                list(self.path_points),
+                list(self.path_points), host_start_ms,
             )
             self.actions.append(action)
             self.last_end_time = timestamp
@@ -456,6 +495,7 @@ class GestureRecorder:
         self.invalid_multitouch = False
         self.active_slot = None
         self.start_time = None
+        self.start_host_monotonic_ms = None
         self.start_point = None
         self.last_point = None
         self.raw_x = None
@@ -465,6 +505,7 @@ class GestureRecorder:
         self, kind: str, sx: float, sy: float, ex: float, ey: float,
         duration_ms: int, start_time: float, end_time: float,
         path_points: list[tuple[float, float, float]],
+        host_start_ms: Optional[int],
     ) -> dict:
         width, height = self.width, self.height
         sx_i, sy_i = int(round(sx)), int(round(sy))
@@ -472,7 +513,7 @@ class GestureRecorder:
         timestamp = int(round((end_time * 1000) + self.epoch_offset_ms))
         start_timestamp = int(round((start_time * 1000) + self.epoch_offset_ms))
         gap_before_ms = 0 if self.last_end_time is None else max(0, int(round((start_time - self.last_end_time) * 1000)))
-        state_before = self.state_provider(int(round(start_time * 1000))) if self.state_provider else None
+        state_before = self.state_provider(host_start_ms) if self.state_provider and host_start_ms is not None else None
         normalized_points = [
             {
                 "x": normalize_pixel(x, width),
@@ -498,6 +539,7 @@ class GestureRecorder:
             "timestamp": timestamp,
             "startTimestamp": start_timestamp,
             "startUptimeMs": int(round(start_time * 1000)),
+            "recordingHostStartMonotonicMs": host_start_ms,
             "gapBeforeMs": gap_before_ms,
             "screenStateBefore": state_before,
             "inputValue": None,
@@ -647,6 +689,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if snapshot is not None:
                         action["stateSnapshotReliable"] = bool(snapshot.get("stateSnapshotReliable"))
                         action["uiSnapshotReliable"] = bool(snapshot.get("uiSnapshotReliable"))
+                    else:
+                        action["stateSnapshotReliable"] = False
+                        action["uiSnapshotReliable"] = False
                     atomic_write(output_path, workflow_payload(
                         recorder.actions, device, recorder.width, recorder.height, rotation
                     ))
@@ -673,6 +718,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             recorder.actions, device, recorder.width, recorder.height, rotation
         ))
         print(f"Saved {len(recorder.actions)} gestures to {output_path.resolve()}")
+        snapshots = [action.get("screenStateBefore") for action in recorder.actions]
+        captured = sum(isinstance(snapshot, dict) for snapshot in snapshots)
+        reliable = sum(bool(action.get("stateSnapshotReliable")) for action in recorder.actions)
+        ui_reliable = sum(bool(action.get("uiSnapshotReliable")) for action in recorder.actions)
+        print(f"Screen snapshots: {captured}/{len(recorder.actions)} captured, {reliable} foreground/window reliable, {ui_reliable} UI-text reliable.")
         if not recorder.actions:
             print("No gestures were captured. Check the selected event node and device permissions.", file=sys.stderr)
             return 5

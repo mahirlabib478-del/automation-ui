@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from adb_gesture_recorder import (
     GestureRecorder,
+    ScreenStateObserver,
     parse_display_size,
     parse_event_line,
     parse_input_devices,
@@ -136,6 +137,38 @@ add device 2: /dev/input/event2
         self.assertEqual(recorder.actions[0]["gapBeforeMs"], 0)
         self.assertEqual(recorder.actions[1]["gapBeforeMs"], 5_000)
         self.assertLess(recorder.actions[1]["startTimestamp"], recorder.actions[1]["timestamp"])
+
+    def test_snapshot_before_uses_host_monotonic_time_and_ui_history(self):
+        observer = ScreenStateObserver(None, capture_ui_hierarchy=True)
+        observer.history = [{
+            "foregroundPackage": "com.example",
+            "foregroundActivity": "com.example.Main",
+            "focusedWindowPackage": "com.example",
+            "focusedWindow": "com.example.Main",
+            "sampledAtHostMonotonicMs": 1000,
+            "visibleTexts": [],
+            "uiSnapshotReliable": False,
+        }]
+        observer.ui_history = [{
+            "visibleTexts": ["Continue", "Settings"],
+            "uiCapturedHostMonotonicMs": 1200,
+            "uiSnapshotReliable": True,
+        }]
+        snapshot = observer.snapshot_before(1500)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["foregroundPackage"], "com.example")
+        self.assertTrue(snapshot["stateSnapshotReliable"])
+        self.assertTrue(snapshot["uiSnapshotReliable"])
+        self.assertEqual(snapshot["visibleTexts"], ["Continue", "Settings"])
+
+    def test_snapshot_before_does_not_use_future_state(self):
+        observer = ScreenStateObserver(None)
+        observer.history = [{
+            "foregroundPackage": "com.example",
+            "focusedWindowPackage": "com.example",
+            "sampledAtHostMonotonicMs": 2000,
+        }]
+        self.assertIsNone(observer.snapshot_before(1500))
 
     def test_attaches_pre_touch_state_snapshot(self):
         recorder = GestureRecorder(self.device, 101, 101, 0, 1_700_000_000_000)
