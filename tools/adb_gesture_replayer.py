@@ -4,7 +4,7 @@
 Examples:
   python adb_gesture_replayer.py --input adb-gestures.json --dry-run
   python adb_gesture_replayer.py --input adb-gestures.json
-  python adb_gesture_replayer.py --input adb-gestures.json --no-verify-state
+  python adb_gesture_replayer.py --input adb-gestures.json --verify-state
 
 This uses Android's shell input commands through an authorized ADB connection.
 It does not require the Automation UI app to remain in the foreground.
