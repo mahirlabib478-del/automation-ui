@@ -66,7 +66,7 @@ jobs:
              python adb_gesture_replayer.py --input adb-gestures.json
           9. Optional: enable best-effort screen-state checks with:
              python adb_gesture_replayer.py --input adb-gestures.json --verify-state
-         10. Review adb-replay-log.jsonl for replayed coordinates and any warnings.
+          10. Review adb-replay-log.jsonl for replayed coordinates and any warnings.
 
           NOTES
           - Keep the same display orientation during recording and replay.
