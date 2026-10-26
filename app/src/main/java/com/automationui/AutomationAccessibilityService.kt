@@ -233,15 +233,19 @@ class AutomationAccessibilityService : AccessibilityService() {
         val label = safeLabel(source, event)
         var current: AccessibilityNodeInfo? = source?.let { AccessibilityNodeInfo.obtain(it) }
         var target: AccessibilityNodeInfo? = null
-        repeat(7) {
-            val node = current ?: return@repeat
+        var depth = 0
+        while (current != null && depth < 7 && target == null) {
+            val node = current
             if (node.isClickable || node.isCheckable) {
                 target = AccessibilityNodeInfo.obtain(node)
-                return@repeat
+                node.recycle()
+                current = null
+            } else {
+                val parent = node.parent
+                node.recycle()
+                current = parent
             }
-            val parent = node.parent
-            node.recycle()
-            current = parent
+            depth++
         }
 
         val chosen = target ?: current
@@ -269,7 +273,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             timestamp = System.currentTimeMillis()
         )
         target?.recycle()
-        if (target == null) current?.recycle()
+        current?.recycle()
         return action
     }
 
