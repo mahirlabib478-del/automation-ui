@@ -289,13 +289,30 @@ internal fun mergeRecordedActions(
                     when (kind) {
                         "TAP", "LONG_PRESS" -> {
                             val otherCenter = actionCenter(other)
-                            other.type == "CLICK" && elapsed <= 2_000L &&
+                            val clickMatch = other.type == "CLICK" && elapsed <= 2_000L &&
                                 otherCenter != null && near(center, otherCenter, 0.18f)
+                            // A bottom navigation tap can be the semantic trigger for HOME.
+                            val homeTapMatch = kind == "TAP" && other.type == "HOME" &&
+                                elapsed <= 2_000L && candidate.gestureStartY >= 9_300
+                            clickMatch || homeTapMatch
                         }
                         "SWIPE" -> {
                             val otherCenter = actionCenter(other)
-                            other.type == "SCROLL" && elapsed <= 2_000L &&
+                            val scrollMatch = other.type == "SCROLL" && elapsed <= 2_000L &&
                                 otherCenter != null && near(center, otherCenter, 0.48f)
+                            val startsAtBottom = candidate.gestureStartY >= 8_500 &&
+                                candidate.gestureEndY < candidate.gestureStartY &&
+                                candidate.gestureEndY <= 8_500
+                            val homeSwipeMatch = other.type == "HOME" && elapsed <= 2_000L && startsAtBottom
+                            val horizontal = kotlin.math.abs(candidate.gestureEndX - candidate.gestureStartX) >
+                                kotlin.math.abs(candidate.gestureEndY - candidate.gestureStartY)
+                            val leftEdgeBack = candidate.gestureStartX <= 500 &&
+                                candidate.gestureEndX > candidate.gestureStartX
+                            val rightEdgeBack = candidate.gestureStartX >= 9_500 &&
+                                candidate.gestureEndX < candidate.gestureStartX
+                            val backSwipeMatch = other.type == "BACK" && elapsed <= 2_000L &&
+                                horizontal && (leftEdgeBack || rightEdgeBack)
+                            scrollMatch || homeSwipeMatch || backSwipeMatch
                         }
                         else -> false
                     }

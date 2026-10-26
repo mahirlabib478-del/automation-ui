@@ -130,6 +130,26 @@ class ReplayPolicyTest {
         assertEquals("CLICK", merged.single().type)
     }
 
+    @Test fun mergeRemovesGestureThatAlreadyTriggeredHome() {
+        val home = action(type = "HOME", timestamp = 10_100L).copy(
+            left = 0, top = 0, right = 0, bottom = 0
+        )
+        val homeSwipe = gesture(10_000L, "SWIPE", x = 5000, y = 9800, endX = 5000, endY = 5000)
+        val merged = mergeRecordedActions(listOf(home), listOf(homeSwipe))
+        assertEquals(1, merged.size)
+        assertEquals("HOME", merged.single().type)
+    }
+
+    @Test fun mergeRemovesEdgeSwipeThatAlreadyTriggeredBack() {
+        val back = action(type = "BACK", timestamp = 20_100L).copy(
+            left = 0, top = 0, right = 0, bottom = 0
+        )
+        val backSwipe = gesture(20_000L, "SWIPE", x = 100, y = 5000, endX = 2500, endY = 5000)
+        val merged = mergeRecordedActions(listOf(back), listOf(backSwipe))
+        assertEquals(1, merged.size)
+        assertEquals("BACK", merged.single().type)
+    }
+
     @Test fun mergeKeepsGestureWhenNoSemanticActionMatches() {
         val swipe = gesture(10_000L, "SWIPE", x = 5000, y = 8000, endX = 5000, endY = 2000)
         val merged = mergeRecordedActions(emptyList(), listOf(swipe))
