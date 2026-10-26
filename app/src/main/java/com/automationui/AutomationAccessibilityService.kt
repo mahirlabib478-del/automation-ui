@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -267,6 +268,20 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (!replaying) return
 
         when (action.type) {
+            "OPEN_SETTINGS" -> {
+                runCatching {
+                    startActivity(
+                        Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }.onSuccess {
+                    setReplayStatus("Opened Android Settings")
+                    waitForNextTarget(nextAction, 600L, 0L, done)
+                }.onFailure {
+                    setReplayStatus("Could not open Android Settings")
+                    done()
+                }
+            }
+
             "HOME" -> {
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 setReplayStatus("HOME action sent")
