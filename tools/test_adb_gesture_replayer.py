@@ -47,6 +47,29 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         self.assertFalse(matched)
         self.assertIn("foreground app differs", reason)
 
+    def test_state_mismatch_detects_missing_current_identity(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.example"},
+            {"foregroundPackage": None, "focusedWindowPackage": None}
+        )
+        self.assertFalse(matched)
+        self.assertIn("cannot verify foreground app", reason)
+
+    def test_ui_only_snapshot_can_verify_visible_text(self):
+        matched, _ = state_matches(
+            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"]},
+            {"visibleTexts": ["Continue", "Settings"]}
+        )
+        self.assertTrue(matched)
+
+    def test_ui_snapshot_fails_if_current_hierarchy_unavailable(self):
+        matched, reason = state_matches(
+            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"]},
+            {"visibleTexts": []}
+        )
+        self.assertFalse(matched)
+        self.assertIn("hierarchy is unavailable", reason)
+
     def test_state_matches_same_package(self):
         matched, _ = state_matches(
             {"foregroundPackage": "com.example", "focusedWindowPackage": "com.example"},

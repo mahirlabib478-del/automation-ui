@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from adb_gesture_recorder import (
     capture_foreground_state,
+    capture_visible_ui_texts,
     parse_display_size,
     parse_rotation,
     run_adb,
@@ -109,27 +110,44 @@ def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple
     ):
         wanted = expected.get(key)
         got = actual.get(key)
+        if wanted and not got:
+            return False, f"cannot verify {label}; current identity is unavailable"
         if wanted and got and wanted != got:
             return False, f"{label} differs (recorded={wanted}, current={got})"
 
     expected_texts = expected.get("visibleTexts") or []
     actual_texts = actual.get("visibleTexts") or []
-    if verify_ui and expected.get("uiSnapshotReliable") and len(expected_texts) >= 2 and actual_texts:
-        wanted = {normalize_text(str(x)) for x in expected_texts if str(x).strip()}
-        got = {normalize_text(str(x)) for x in actual_texts if str(x).strip()}
-        overlap = len(wanted & got)
-        required = max(1, min(3, math.ceil(min(len(wanted), 8) * 0.25)))
-        if overlap < required:
-            return False, f"visible UI text differs (matched {overlap}, need {required})"
+    identity_available = bool(expected.get("foregroundPackage") or expected.get("focusedWindowPackage"))
+    if verify_ui and expected.get("uiSnapshotReliable"):
+        if len(expected_texts) < 2:
+            if not identity_available:
+                return False, "not enough recorded UI text to verify the screen without app/window identity"
+        else:
+            if not actual_texts:
+                return False, "recorded UI text exists but current UI hierarchy is unavailable"
+            wanted = {normalize_text(str(x)) for x in expected_texts if str(x).strip()}
+            got = {normalize_text(str(x)) for x in actual_texts if str(x).strip()}
+            overlap = len(wanted & got)
+            required = max(1, min(3, math.ceil(min(len(wanted), 8) * 0.25)))
+            if overlap < required:
+                return False, f"visible UI text differs (matched {overlap}, need {required})"
+    if not identity_available and not (verify_ui and expected.get("uiSnapshotReliable") and len(expected_texts) >= 2):
+        return False, "recorded screen has no verifiable app/window identity or sufficient UI text"
     return True, "screen state matches"
 
 
 def wait_for_expected_state(serial: Optional[str], action: dict, timeout_ms: int,
                             verify_ui: bool, dry_run: bool) -> tuple[bool, str]:
     expected = action.get("screenStateBefore")
-    reliable = bool(action.get("stateSnapshotReliable") or (
-        isinstance(expected, dict) and expected.get("stateSnapshotReliable")
-    ))
+    reliable = bool(
+        isinstance(expected, dict)
+        and (
+            action.get("stateSnapshotReliable")
+            or expected.get("stateSnapshotReliable")
+            or action.get("uiSnapshotReliable")
+            or expected.get("uiSnapshotReliable")
+        )
+    )
     if not isinstance(expected, dict) or not reliable:
         return True, "no fresh pre-touch state snapshot; state verification skipped"
     if dry_run:
@@ -139,10 +157,9 @@ def wait_for_expected_state(serial: Optional[str], action: dict, timeout_ms: int
     last_reason = "state unavailable"
     while True:
         try:
-            actual = capture_foreground_state(
-                serial,
-                capture_ui_hierarchy=verify_ui and bool(expected.get("uiSnapshotReliable")),
-            )
+            actual = capture_foreground_state(serial)
+            if verify_ui and expected.get("uiSnapshotReliable"):
+                actual.update(capture_visible_ui_texts(serial))
             matched, reason = state_matches(expected, actual, verify_ui=verify_ui)
             if matched:
                 return True, reason
