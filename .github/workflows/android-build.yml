@@ -55,7 +55,7 @@ jobs:
           1. Extract this ZIP on the Windows computer. app-debug.apk is optional; ADB-only recording/replay does not require Automation UI to be installed or open.
           2. Enable Developer options and USB debugging on the Android phone. Connect USB and accept the RSA authorization prompt.
           3. Open Command Prompt in this extracted folder and run: adb devices
-             The phone must show as "device". If adb is not on PATH, the scripts check C:\\platform-tools\\adb.exe automatically.
+             If that command is not recognized, run C:\\platform-tools\\adb.exe devices. The scripts also check C:\\platform-tools\\adb.exe automatically.
           4. Keep Automation UI closed. Record directly from the phone's touchscreen with:
              python adb_gesture_recorder.py --output adb-gestures.json --capture-ui-hierarchy
           5. Use the phone normally. Each gesture records its start/end, duration, precise gap before the next gesture, and best-effort pre-touch foreground/window/UI text state. UI hierarchy capture may be slower or unavailable on some devices.
@@ -68,7 +68,7 @@ jobs:
 
           NOTES
           - Keep the same display orientation during recording and replay.
-          - If getevent access is denied, use Accessibility-only recording; do not treat an empty JSON file as a successful capture.
+          - If getevent access is denied, this ADB-only recorder cannot capture raw touch input on that OEM build. Use the optional hybrid Accessibility workflow instead; do not treat an empty JSON file as a successful capture.
           - Password fields are excluded from text recording. Multi-touch is intentionally not approximated.
           - This is a debug build. Automated tests passed, but each target app/workflow still requires real-device verification.
           - ADB shell input supports common taps/swipes/long-presses, not every protected system gesture, secure screen, or multi-touch interaction.
