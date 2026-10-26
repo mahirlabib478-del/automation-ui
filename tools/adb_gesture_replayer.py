@@ -393,6 +393,22 @@ def wait_for_expected_state(serial: Optional[str], action: dict, timeout_ms: int
         time.sleep(0.4)
 
 
+def tap_duration_remainder_ms(action: dict, dispatch_elapsed_ms: int) -> int:
+    """Return the unelapsed part of a captured TAP duration, if that metadata exists."""
+    if str(action.get("gestureKind") or "").upper() != "TAP":
+        return 0
+    if action.get("gestureDurationMs") is None:
+        return 0
+    try:
+        duration = int(action.get("gestureDurationMs"))
+    except (TypeError, ValueError):
+        return 0
+    if duration <= 0:
+        return 0
+    duration = max(50, min(10_000, duration))
+    return max(0, duration - max(0, int(dispatch_elapsed_ms)))
+
+
 def dispatch_action(serial: Optional[str], action: dict, width: int, height: int,
                     recorded_width: int, recorded_height: int, dry_run: bool,
                     recorded_rotation: Optional[int] = None,
@@ -542,17 +558,38 @@ def main(argv: Optional[list[str]] = None) -> int:
                             f"    NOTE: ADB shell input approximates {len(points)} recorded path samples as a straight swipe; "
                             f"maximum path deviation is about {deviation:.0f} px, so curved swipes may behave differently."
                         )
+                dispatch_started = time.monotonic()
                 command = dispatch_action(
                     args.serial, action, width, height,
                     recorded_width, recorded_height, args.dry_run,
                     recorded_rotation=recorded_rotation, current_rotation=rotation
                 )
+                dispatch_elapsed_ms = int(round((time.monotonic() - dispatch_started) * 1000))
                 print(f"    ADB: {command}")
                 log.write(json.dumps({
                     "step": index, "event": "gesture", "kind": action.get("gestureKind"),
-                    "command": command, "timestamp": int(time.time() * 1000)
+                    "command": command, "dispatchElapsedMs": dispatch_elapsed_ms,
+                    "timestamp": int(time.time() * 1000)
                 }) + "\n")
                 log.flush()
+
+                # ADB input tap does not preserve how long the finger stayed down
+                # in the recording. Preserve the overall timing before the next
+                # action by waiting out any remaining captured TAP duration; the
+                # next loop then applies the recorded gap after the touch ended.
+                if not args.dry_run:
+                    tap_remainder_ms = tap_duration_remainder_ms(action, dispatch_elapsed_ms)
+                    if tap_remainder_ms:
+                        print(
+                            f"    WAIT: preserving recorded TAP timing; "
+                            f"waiting {tap_remainder_ms} ms before the next recorded gap"
+                        )
+                        log.write(json.dumps({
+                            "step": index, "event": "tap-duration-remainder",
+                            "waitMs": tap_remainder_ms, "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                        log.flush()
+                        time.sleep(tap_remainder_ms / 1000)
                 previous = action
 
         print(f"Replay finished. Log: {log_path.resolve()}")
