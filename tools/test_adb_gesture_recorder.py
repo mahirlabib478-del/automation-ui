@@ -101,6 +101,23 @@ add device 2: /dev/input/event2
         self.assertNotEqual(recorder.actions[0]["gestureStartY"], recorder.actions[0]["gestureEndY"])
 
 
+    def test_records_normalized_gesture_path_samples(self):
+        recorder = GestureRecorder(self.device, 101, 101, 0, 1_700_000_000_000)
+        lines = [
+            "[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID 00000001",
+            "[ 1.010000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000010",
+            "[ 1.020000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000010",
+            "[ 1.040000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000032",
+            "[ 1.050000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000032",
+            "[ 1.100000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID ffffffff",
+        ]
+        for line in lines:
+            recorder.feed(line)
+        points = recorder.actions[0]["gesturePoints"]
+        self.assertGreaterEqual(len(points), 2)
+        self.assertTrue(all(0 <= p["x"] <= 10000 and 0 <= p["y"] <= 10000 for p in points))
+        self.assertTrue(all(points[i]["tMs"] <= points[i + 1]["tMs"] for i in range(len(points) - 1)))
+
     def test_records_gap_before_each_gesture(self):
         recorder = GestureRecorder(self.device, 101, 101, 0, 1_700_000_000_000)
         lines = [

@@ -375,6 +375,8 @@ class GestureRecorder:
         self.raw_y: Optional[int] = None
         self.last_end_time: Optional[float] = None
         self.state_provider = None
+        self.path_points: list[tuple[float, float, float]] = []
+        self.last_path_point: Optional[tuple[float, float, float]] = None
 
     def _map_point(self) -> Optional[tuple[float, float]]:
         if self.raw_x is None or self.raw_y is None:
@@ -402,14 +404,27 @@ class GestureRecorder:
         self.last_point = None
         self.raw_x = None
         self.raw_y = None
+        self.path_points = []
+        self.last_path_point = None
 
-    def _update_point(self):
+    def _update_point(self, timestamp: float):
         point = self._map_point()
         if point is None or not self.active:
             return
         if self.start_point is None:
             self.start_point = point
         self.last_point = point
+        if self.start_time is not None:
+            candidate = (point[0], point[1], max(0.0, (timestamp - self.start_time) * 1000))
+            previous = self.last_path_point
+            if previous is None or candidate[2] - previous[2] >= 12 or math.hypot(
+                candidate[0] - previous[0], candidate[1] - previous[1]
+            ) >= 3:
+                if len(self.path_points) < 250:
+                    self.path_points.append(candidate)
+                else:
+                    self.path_points[-1] = candidate
+                self.last_path_point = candidate
 
     def _finish(self, timestamp: float):
         if not self.active:
@@ -431,7 +446,10 @@ class GestureRecorder:
             else:
                 kind = "TAP"
             start_time = self.start_time
-            action = self._action(kind, sx, sy, ex, ey, duration_ms, start_time, timestamp)
+            action = self._action(
+                kind, sx, sy, ex, ey, duration_ms, start_time, timestamp,
+                list(self.path_points),
+            )
             self.actions.append(action)
             self.last_end_time = timestamp
         self.active = False
@@ -445,7 +463,8 @@ class GestureRecorder:
 
     def _action(
         self, kind: str, sx: float, sy: float, ex: float, ey: float,
-        duration_ms: int, start_time: float, end_time: float
+        duration_ms: int, start_time: float, end_time: float,
+        path_points: list[tuple[float, float, float]],
     ) -> dict:
         width, height = self.width, self.height
         sx_i, sy_i = int(round(sx)), int(round(sy))
@@ -454,6 +473,14 @@ class GestureRecorder:
         start_timestamp = int(round((start_time * 1000) + self.epoch_offset_ms))
         gap_before_ms = 0 if self.last_end_time is None else max(0, int(round((start_time - self.last_end_time) * 1000)))
         state_before = self.state_provider(int(round(start_time * 1000))) if self.state_provider else None
+        normalized_points = [
+            {
+                "x": normalize_pixel(x, width),
+                "y": normalize_pixel(y, height),
+                "tMs": int(round(elapsed_ms)),
+            }
+            for x, y, elapsed_ms in path_points
+        ]
         return {
             "type": "GESTURE",
             "packageName": None,
@@ -483,6 +510,7 @@ class GestureRecorder:
             "gestureEndX": normalize_pixel(ex, width),
             "gestureEndY": normalize_pixel(ey, height),
             "gestureDurationMs": duration_ms,
+            "gesturePoints": normalized_points,
         }
 
     def feed(self, line: str):
@@ -520,10 +548,10 @@ class GestureRecorder:
             return
         if event_type == "EV_ABS" and code == self.device.x_code:
             self.raw_x = value
-            self._update_point()
+            self._update_point(timestamp)
         elif event_type == "EV_ABS" and code == self.device.y_code:
             self.raw_y = value
-            self._update_point()
+            self._update_point(timestamp)
 
 
 def workflow_payload(actions: list[dict], device: InputDevice, width: int, height: int, rotation: int) -> dict:

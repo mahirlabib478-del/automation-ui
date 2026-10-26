@@ -261,6 +261,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         print("STOP: recorded screen state did not match; refusing to tap a potentially wrong screen.", file=sys.stderr)
                         return 4
 
+                points = action.get("gesturePoints") or []
+                if str(action.get("gestureKind", "")).upper() == "SWIPE" and len(points) > 2:
+                    print(f"    NOTE: {len(points)} path samples were recorded; standard ADB shell input replays this as a straight swipe between endpoints.")
                 command = dispatch_action(
                     args.serial, action, width, height,
                     recorded_width, recorded_height, args.dry_run
