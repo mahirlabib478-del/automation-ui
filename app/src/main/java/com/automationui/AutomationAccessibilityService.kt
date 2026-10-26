@@ -406,7 +406,12 @@ class AutomationAccessibilityService : AccessibilityService() {
         val action = actions[index]
         replayActionIndex = index + 1
         setReplayStatus("Running ${action.type}")
-        val delay = ReplayPolicy.delayMs(actions.getOrNull(index - 1)?.timestamp, action.timestamp)
+        val previousAction = actions.getOrNull(index - 1)
+        val delay = if (action.type == "WAIT" || previousAction?.type == "WAIT") {
+            0L
+        } else {
+            ReplayPolicy.delayMs(previousAction?.timestamp, action.timestamp)
+        }
 
         handler.postDelayed({
             if (!replaying) return@postDelayed
@@ -425,6 +430,19 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (!replaying) return
 
         when (action.type) {
+            "WAIT" -> {
+                val duration = action.waitDurationMs.coerceIn(1L, 30_000L)
+                setReplayStatus("Waiting ${duration} ms to preserve recorded pause")
+                handler.postDelayed({
+                    if (replaying) {
+                        setReplayStatus("VERIFY PASS: recorded pause completed")
+                        done()
+                    }
+                }, duration)
+            }
+
+            "WAIT_FOR_UI" -> waitForUi(action, 0L, done)
+
             "GESTURE" -> {
                 if (!isValidGesture(action)) {
                     setReplayStatus("Skipped gesture: invalid or missing coordinates")
@@ -564,8 +582,13 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                             }
                             node.recycle()
-                            setReplayStatus(if (result) "Text input applied" else "Text input failed")
-                            waitForNextTarget(nextAction, 350L, 0L, done)
+                            if (result) {
+                                setReplayStatus("VERIFY PASS: text input applied")
+                                waitForNextTarget(nextAction, 350L, 0L, done)
+                            } else {
+                                setReplayStatus("VERIFY FAIL: text input was not applied; replay stopped")
+                                replaying = false
+                            }
                         }
                     }
 
@@ -604,8 +627,38 @@ class AutomationAccessibilityService : AccessibilityService() {
                 }
             }
 
-            else -> done()
+            else -> {
+                setReplayStatus("VERIFY FAIL: unsupported action type ${action.type}; replay stopped")
+                replaying = false
+            }
         }
+    }
+
+    private fun waitForUi(action: RecordedAction, elapsedMs: Long, done: () -> Unit) {
+        if (!replaying) return
+        val timeoutMs = action.waitTimeoutMs.coerceIn(1_000L, 120_000L)
+        val targetLabel = action.text?.trim().orEmpty()
+        handler.postDelayed({
+            if (!replaying) return@postDelayed
+            val root = rootInActiveWindow
+            val packageMatches = action.packageName == null ||
+                root?.packageName?.toString() == action.packageName
+            val target = if (root != null && packageMatches) findNode(root, action) else null
+            root?.recycle()
+            if (target != null) {
+                target.recycle()
+                setReplayStatus("VERIFY PASS: UI text '$targetLabel' appeared")
+                done()
+            } else {
+                val nextElapsed = elapsedMs + 250L
+                if (nextElapsed >= timeoutMs) {
+                    setReplayStatus("VERIFY FAIL: UI text '$targetLabel' did not appear within ${timeoutMs} ms; replay stopped")
+                    replaying = false
+                } else {
+                    waitForUi(action, nextElapsed, done)
+                }
+            }
+        }, 250L)
     }
 
     /**
@@ -619,7 +672,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         done: () -> Unit
     ) {
         if (!replaying) return
-        if (nextAction == null || nextAction.type == "HOME" || nextAction.type == "BACK") {
+        if (nextAction == null || nextAction.type in setOf("HOME", "BACK", "WAIT", "WAIT_FOR_UI")) {
             handler.postDelayed({ if (replaying) done() }, minimumDelayMs)
             return
         }
@@ -645,10 +698,13 @@ class AutomationAccessibilityService : AccessibilityService() {
             root?.recycle()
             val nextElapsed = elapsedMs + pollDelay
             if (ready && nextElapsed >= minimumDelayMs) {
+                val label = nextAction.text?.takeIf { it.isNotBlank() } ?: nextAction.type
+                setReplayStatus("VERIFY PASS: next target '$label' is ready")
                 done()
             } else if (nextElapsed >= 5000L) {
-                setReplayStatus("Next screen/target timed out; replay continuing")
-                done()
+                val label = nextAction.text?.takeIf { it.isNotBlank() } ?: nextAction.type
+                setReplayStatus("VERIFY FAIL: next target '$label' was not ready after 5 s; replay stopped")
+                replaying = false
             } else {
                 waitForNextTarget(nextAction, minimumDelayMs, nextElapsed, done)
             }
