@@ -13,8 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonChecked
@@ -67,7 +67,10 @@ class MainActivity : ComponentActivity() {
         MaterialTheme {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(20.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text("Automation UI", style = MaterialTheme.typography.headlineMedium)
@@ -216,11 +219,11 @@ class MainActivity : ComponentActivity() {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(actions) { index, action ->
+                        actions.forEachIndexed { index, action ->
                             Card {
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                                     Text("${index + 1}. ${action.type}", style = MaterialTheme.typography.titleSmall)
