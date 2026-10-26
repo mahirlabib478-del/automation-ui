@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from adb_gesture_replayer import (
@@ -11,6 +12,9 @@ from adb_gesture_replayer import (
     recorded_gap_ms,
     state_matches,
     dispatch_action,
+    main,
+    require_gesture_actions,
+    swipe_path_deviation_px,
 )
 
 
@@ -166,6 +170,112 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         )
         self.assertFalse(matched)
         self.assertIn("focused window differs", reason)
+
+
+    def test_legacy_swipe_uses_recorded_path_endpoints(self):
+        action = {
+            "type": "GESTURE",
+            "gestureKind": "SWIPE",
+            "gesturePoints": [
+                {"x": 1000, "y": 8000, "tMs": 0},
+                {"x": 1200, "y": 5000, "tMs": 100},
+                {"x": 1000, "y": 2000, "tMs": 200},
+            ],
+        }
+        self.assertEqual(action_coordinates(action, 720, 1600, 360, 800),
+                         (36, 639, 36, 160))
+
+    def test_legacy_swipe_without_endpoints_or_path_is_rejected(self):
+        action = {
+            "type": "GESTURE", "gestureKind": "SWIPE",
+            "left": 10, "top": 20, "right": 300, "bottom": 700,
+            "screenWidth": 360, "screenHeight": 800,
+        }
+        with self.assertRaisesRegex(ValueError, "does not preserve swipe direction"):
+            action_coordinates(action, 360, 800, 360, 800)
+
+    def test_partial_normalized_coordinates_are_rejected(self):
+        action = {"type": "GESTURE", "gestureKind": "TAP", "gestureStartX": 4000}
+        with self.assertRaisesRegex(ValueError, "incomplete normalized coordinates"):
+            action_coordinates(action, 720, 1600, 720, 1600)
+
+    def test_rotation_change_transforms_coordinates(self):
+        action = {"type": "GESTURE", "gestureKind": "SWIPE",
+                  "gestureStartX": 0, "gestureStartY": 0,
+                  "gestureEndX": 10000, "gestureEndY": 10000}
+        self.assertEqual(
+            action_coordinates(action, 720, 1600, 1600, 720,
+                               recorded_rotation=0, current_rotation=1),
+            (0, 719, 1599, 0)
+        )
+
+    def test_mixed_semantic_workflow_is_rejected_instead_of_skipped(self):
+        with self.assertRaisesRegex(ValueError, "refuses to skip other action types"):
+            require_gesture_actions([
+                {"type": "GESTURE", "gestureKind": "TAP"},
+                {"type": "WAIT", "waitDurationMs": 1000},
+            ])
+
+    def test_curved_swipe_path_deviation_is_reported(self):
+        action = {"gestureKind": "SWIPE", "gesturePoints": [
+            {"x": 0, "y": 0}, {"x": 5000, "y": 10000}, {"x": 10000, "y": 0}
+        ]}
+        deviation = swipe_path_deviation_px(action, 100, 100)
+        self.assertIsNotNone(deviation)
+        self.assertGreater(deviation, 90)
+
+    def test_state_verification_is_off_by_default(self):
+        payload = {
+            "format": "adb-gesture-capture",
+            "screen": {"width": 360, "height": 800, "rotation": 0},
+            "actions": [{
+                "type": "GESTURE", "gestureKind": "TAP",
+                "gestureStartX": 5000, "gestureStartY": 5000,
+                "gestureEndX": 5000, "gestureEndY": 5000,
+                "gestureDurationMs": 80, "gapBeforeMs": 0,
+                "screenWidth": 360, "screenHeight": 800,
+                "screenStateBefore": {"foregroundPackage": "com.example"},
+                "stateSnapshotReliable": True,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "workflow.json"
+            log_path = Path(directory) / "replay.jsonl"
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch("adb_gesture_replayer.run_adb", return_value="device"), \
+                 patch("adb_gesture_replayer.get_display", return_value=(360, 800, 0)), \
+                 patch("adb_gesture_replayer.dispatch_action", return_value="shell input tap 180 400"), \
+                 patch("adb_gesture_replayer.wait_for_expected_state") as state_check:
+                result = main(["--input", str(input_path), "--log", str(log_path), "--dry-run"])
+        self.assertEqual(result, 0)
+        state_check.assert_not_called()
+
+    def test_state_verification_can_be_enabled_explicitly(self):
+        payload = {
+            "format": "adb-gesture-capture",
+            "screen": {"width": 360, "height": 800, "rotation": 0},
+            "actions": [{
+                "type": "GESTURE", "gestureKind": "TAP",
+                "gestureStartX": 5000, "gestureStartY": 5000,
+                "gestureEndX": 5000, "gestureEndY": 5000,
+                "gestureDurationMs": 80, "gapBeforeMs": 0,
+                "screenWidth": 360, "screenHeight": 800,
+                "screenStateBefore": {"foregroundPackage": "com.example"},
+                "stateSnapshotReliable": True,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "workflow.json"
+            log_path = Path(directory) / "replay.jsonl"
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch("adb_gesture_replayer.run_adb", return_value="device"), \
+                 patch("adb_gesture_replayer.get_display", return_value=(360, 800, 0)), \
+                 patch("adb_gesture_replayer.dispatch_action", return_value="shell input tap 180 400"), \
+                 patch("adb_gesture_replayer.wait_for_expected_state", return_value=(True, "screen state matches")) as state_check:
+                result = main(["--input", str(input_path), "--log", str(log_path),
+                               "--dry-run", "--verify-state"])
+        self.assertEqual(result, 0)
+        state_check.assert_called_once()
 
     def test_state_matches_same_package(self):
         matched, _ = state_matches(
