@@ -69,6 +69,27 @@ class AutomationAccessibilityService : AccessibilityService() {
 
         if (!WorkflowStore.isRecording(this) || replaying) return
 
+        // Reopening our app from the launcher is the natural way to stop a
+        // same-phone recording. Stop before recording that launcher icon click,
+        // so the workflow does not try to reopen the recorder during replay.
+        if (WorkflowStore.isRecording(this) && !replaying &&
+            packageName != null && isLauncher(packageName) &&
+            event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED
+        ) {
+            val source = event.source
+            val clickedLabel = safeLabel(source, event)
+            source?.recycle()
+            val ownLabel = packageManager.getApplicationLabel(applicationInfo).toString()
+            if (clickedLabel.equals(ownLabel, ignoreCase = true)) {
+                WorkflowStore.setRecording(this, false)
+                WorkflowStore.setStatus(
+                    this,
+                    "Recording stopped when Automation UI was reopened; ${WorkflowStore.actions(this).size} actions saved"
+                )
+                return
+            }
+        }
+
         // The app's own Record/Stop/Replay controls are control-plane UI, not
         // part of the user's workflow. Recording them makes replay start with
         // a click on the dashboard instead of the actual task.
