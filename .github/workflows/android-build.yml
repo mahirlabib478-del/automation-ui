@@ -43,10 +43,40 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Upload debug APK
+      - name: Package installable APK and ADB gesture helper
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/app-debug.apk
+          cp tools/adb_gesture_recorder.py dist/adb_gesture_recorder.py
+          cat > dist/QUICKSTART.txt <<'EOF'
+          AUTOMATION UI - HYBRID RECORD & REPLAY QUICKSTART
+
+          1. Install app-debug.apk on the Android phone.
+          2. Open Automation UI and enable its Accessibility Service.
+          3. Enable Developer options and USB debugging on the phone. Connect by USB and accept the RSA authorization prompt.
+          4. On the computer, install Android Platform Tools and Python 3. Run: adb devices
+          5. In Automation UI, tap Record.
+          6. In a computer terminal in this folder, run:
+             python adb_gesture_recorder.py --output adb-gestures.json
+          7. Use the phone normally. The script captures accessible raw touchscreen taps, swipes, and long presses when the device allows shell access.
+          8. Press Ctrl+C in the computer terminal to stop ADB capture.
+          9. Return to the launcher and reopen Automation UI to stop app recording, then choose Import / merge JSON and select adb-gestures.json.
+          10. Review the action list before tapping Replay.
+
+          NOTES
+          - Keep the same display orientation during recording and replay.
+          - If getevent access is denied, use Accessibility-only recording; do not treat an empty JSON file as a successful capture.
+          - Password fields are excluded from text recording. Multi-touch is intentionally not approximated.
+          - This is a debug build. Automated tests passed, but each target app/workflow still requires real-device verification.
+          EOF
+          test -s dist/app-debug.apk
+          test -s dist/adb_gesture_recorder.py
+          test -s dist/QUICKSTART.txt
+
+      - name: Upload APK and ADB gesture helper
         uses: actions/upload-artifact@v4
         with:
-          name: automation-ui-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: automation-ui-hybrid-gesture-kit
+          path: dist/
           if-no-files-found: error
           retention-days: 14
