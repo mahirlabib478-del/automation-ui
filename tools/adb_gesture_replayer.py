@@ -109,22 +109,50 @@ def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple
     # expected app still owns the focused window.
     expected_window = expected.get("focusedWindowPackage")
     actual_window = actual.get("focusedWindowPackage")
+    expected_package = expected.get("foregroundPackage")
+    actual_package = actual.get("foregroundPackage")
+
     if expected_window and actual_window:
+        # A known different focused window is a hard mismatch. Do not override it
+        # merely because a foreground/activity label or some text happens to match.
         if expected_window != actual_window:
             return False, f"focused window differs (recorded={expected_window}, current={actual_window})"
     else:
-        expected_package = expected.get("foregroundPackage")
-        actual_package = actual.get("foregroundPackage")
+        identity_reason = None
         if expected_package and not actual_package:
-            return False, "cannot verify foreground app; current identity is unavailable"
-        if expected_package and actual_package and expected_package != actual_package:
-            return False, f"foreground app differs (recorded={expected_package}, current={actual_package})"
-        if expected_window and not actual_window and not actual_package:
-            return False, "cannot verify focused window or foreground app; current identity is unavailable"
+            identity_reason = "cannot verify foreground app; current identity is unavailable"
+        elif expected_package and actual_package and expected_package != actual_package:
+            identity_reason = f"foreground app differs (recorded={expected_package}, current={actual_package})"
+        elif expected_window and not actual_window and not actual_package:
+            identity_reason = "cannot verify focused window or foreground app; current identity is unavailable"
+
+        # A stable UI dump is a second source of evidence. This specifically handles
+        # transient Android service/resumed-activity labels when the touchable app's
+        # focused window is still the app that was recorded.
+        ui_identity_stable = bool(actual.get("uiIdentityStable"))
+        actual_ui_window = actual.get("uiFocusedWindowPackage")
+        actual_ui_package = actual.get("uiForegroundPackage")
+        expected_target = expected_window or expected_package
+        ui_corroborates_expected = bool(
+            verify_ui
+            and ui_identity_stable
+            and expected_target
+            and (
+                actual_ui_window == expected_target
+                or (not actual_ui_window and actual_ui_package == expected_target)
+            )
+        )
+        if identity_reason and not ui_corroborates_expected:
+            return False, identity_reason
 
     expected_texts = expected.get("visibleTexts") or []
     actual_texts = actual.get("visibleTexts") or []
-    identity_available = bool(expected.get("foregroundPackage") or expected.get("focusedWindowPackage"))
+    identity_available = bool(
+        expected_package or expected_window
+        or (verify_ui and actual.get("uiIdentityStable") and
+            (actual.get("uiFocusedWindowPackage") or actual.get("uiForegroundPackage")))
+    )
+
     if verify_ui and expected.get("uiSnapshotReliable"):
         if len(expected_texts) < 2:
             if not identity_available:
@@ -150,6 +178,7 @@ def state_matches(expected: dict, actual: dict, verify_ui: bool = True) -> tuple
             required = max(1, min(3, math.ceil(min(len(wanted), 8) * 0.25)))
             if overlap < required:
                 return False, f"visible UI text differs (matched {overlap}, need {required})"
+
     if not identity_available and not (verify_ui and expected.get("uiSnapshotReliable") and len(expected_texts) >= 2):
         return False, "recorded screen has no verifiable app/window identity or sufficient UI text"
     return True, "screen state matches"
@@ -174,12 +203,38 @@ def wait_for_expected_state(serial: Optional[str], action: dict, timeout_ms: int
 
     deadline = time.monotonic() + max(0, timeout_ms) / 1000
     last_reason = "state unavailable"
+    ui_fallback_attempted = False
+    last_ui_capture = 0.0
     while True:
         try:
             actual = capture_foreground_state(serial)
-            if verify_ui and expected.get("uiSnapshotReliable"):
-                actual.update(capture_visible_ui_texts(serial))
             matched, reason = state_matches(expected, actual, verify_ui=verify_ui)
+
+            # If the quick foreground/window check mismatches and the recording had
+            # no reliable UI text, take one UI hierarchy sample as corroborating
+            # evidence before stopping. Avoid repeatedly dumping the hierarchy every
+            # 400 ms; it is relatively expensive on some Android devices.
+            should_try_ui_fallback = (
+                not matched
+                and verify_ui
+                and not ui_fallback_attempted
+                and not expected.get("uiSnapshotReliable")
+                and not reason.startswith("focused window differs")
+            )
+            if should_try_ui_fallback:
+                ui_fallback_attempted = True
+                actual.update(capture_visible_ui_texts(serial))
+                matched, reason = state_matches(expected, actual, verify_ui=verify_ui)
+
+            # When the recorded step includes reliable UI text, refresh that evidence
+            # periodically rather than on every fast foreground poll.
+            elif not matched and verify_ui and expected.get("uiSnapshotReliable"):
+                now = time.monotonic()
+                if last_ui_capture == 0.0 or now - last_ui_capture >= 1.2:
+                    actual.update(capture_visible_ui_texts(serial))
+                    last_ui_capture = time.monotonic()
+                    matched, reason = state_matches(expected, actual, verify_ui=verify_ui)
+
             if matched:
                 return True, reason
             last_reason = reason
@@ -219,8 +274,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--serial", help="ADB device serial when multiple devices are connected")
     parser.add_argument("--max-gap-ms", type=int, default=300_000,
                         help="Maximum replay wait before any step (default 5 minutes)")
-    parser.add_argument("--verify-timeout-ms", type=int, default=10_000,
-                        help="How long to wait for a recorded pre-touch screen state")
+    parser.add_argument("--verify-timeout-ms", type=int, default=15_000,
+                        help="How long to wait for a recorded pre-touch screen state (default 15 seconds)")
     parser.add_argument("--no-verify-state", action="store_true",
                         help="Disable foreground/window checks before actions")
     parser.add_argument("--no-verify-ui", action="store_true",
