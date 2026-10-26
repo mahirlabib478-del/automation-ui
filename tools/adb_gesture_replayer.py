@@ -40,7 +40,7 @@ def load_actions(path: Path) -> tuple[list[dict], dict]:
     return payload["actions"], payload
 
 
-def get_display(serial: Optional[str]) -> tuple[int, int, Optional[int]]:
+def get_display(serial: Optional[str], rotation_override: Optional[int] = None) -> tuple[int, int, Optional[int]]:
     raw_size = run_adb(serial, "shell", "wm", "size")
     width, height = parse_display_size(raw_size)
     rotation_text = run_adb(serial, "shell", "dumpsys", "input")
@@ -48,7 +48,8 @@ def get_display(serial: Optional[str]) -> tuple[int, int, Optional[int]]:
         rotation_text += "\n" + run_adb(serial, "shell", "dumpsys", "window", "displays")
     except (OSError, subprocess.SubprocessError):
         pass
-    rotation = parse_rotation(rotation_text)
+    detected_rotation = parse_rotation(rotation_text)
+    rotation = rotation_override if rotation_override is not None else detected_rotation
     if rotation in (1, 3):
         width, height = height, width
     return width, height, rotation
@@ -64,23 +65,160 @@ def normalized_coordinate(value: Any, size: int) -> Optional[int]:
     return None
 
 
-def action_coordinates(action: dict, recorded_width: int, recorded_height: int,
-                       current_width: int, current_height: int) -> tuple[int, int, int, int]:
-    sx = normalized_coordinate(action.get("gestureStartX"), current_width)
-    sy = normalized_coordinate(action.get("gestureStartY"), current_height)
-    ex = normalized_coordinate(action.get("gestureEndX"), current_width)
-    ey = normalized_coordinate(action.get("gestureEndY"), current_height)
-    if None not in (sx, sy, ex, ey):
-        return int(sx), int(sy), int(ex), int(ey)
+def rotate_normalized_point(x: float, y: float, from_rotation: Optional[int],
+                            to_rotation: Optional[int]) -> tuple[float, float]:
+    """Transform normalized screen coordinates through natural orientation."""
+    if from_rotation is None or to_rotation is None or from_rotation == to_rotation:
+        return x, y
 
-    # Compatibility fallback for older JSON files with only pixel bounds.
-    old_w = max(1, int(action.get("screenWidth") or recorded_width or current_width))
-    old_h = max(1, int(action.get("screenHeight") or recorded_height or current_height))
-    left, top = int(action.get("left") or 0), int(action.get("top") or 0)
-    right, bottom = int(action.get("right") or left), int(action.get("bottom") or top)
-    x1 = int(round(((left + right) / 2) / old_w * max(0, current_width - 1)))
-    y1 = int(round(((top + bottom) / 2) / old_h * max(0, current_height - 1)))
-    return x1, y1, x1, y1
+    # Invert the recorder's natural-to-current orientation transform.
+    if from_rotation == 1:
+        natural_x, natural_y = 1.0 - y, x
+    elif from_rotation == 2:
+        natural_x, natural_y = 1.0 - x, 1.0 - y
+    elif from_rotation == 3:
+        natural_x, natural_y = y, 1.0 - x
+    else:
+        natural_x, natural_y = x, y
+
+    # Apply the current display orientation.
+    if to_rotation == 1:
+        return natural_y, 1.0 - natural_x
+    if to_rotation == 2:
+        return 1.0 - natural_x, 1.0 - natural_y
+    if to_rotation == 3:
+        return 1.0 - natural_y, natural_x
+    return natural_x, natural_y
+
+
+def _normalized_pair(x_value: Any, y_value: Any) -> Optional[tuple[float, float]]:
+    try:
+        x = int(x_value)
+        y = int(y_value)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= x <= 10_000 and 0 <= y <= 10_000):
+        return None
+    return x / 10_000.0, y / 10_000.0
+
+
+def action_coordinates(action: dict, recorded_width: int, recorded_height: int,
+                       current_width: int, current_height: int,
+                       recorded_rotation: Optional[int] = None,
+                       current_rotation: Optional[int] = None) -> tuple[int, int, int, int]:
+    keys = ("gestureStartX", "gestureStartY", "gestureEndX", "gestureEndY")
+    has_normalized_fields = any(key in action for key in keys)
+    points = action.get("gesturePoints") or []
+    kind = str(action.get("gestureKind") or "").upper()
+
+    if all(key in action for key in keys):
+        start = _normalized_pair(action.get("gestureStartX"), action.get("gestureStartY"))
+        end = _normalized_pair(action.get("gestureEndX"), action.get("gestureEndY"))
+        if start is None or end is None:
+            raise ValueError("Gesture has invalid normalized coordinates; refusing to guess a touch location.")
+    elif has_normalized_fields:
+        raise ValueError("Gesture has incomplete normalized coordinates; refusing to guess a touch location.")
+    else:
+        path_points = []
+        if isinstance(points, list):
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                pair = _normalized_pair(point.get("x"), point.get("y"))
+                if pair is not None:
+                    path_points.append(pair)
+
+        if path_points:
+            start = path_points[0]
+            end = path_points[-1] if kind == "SWIPE" else start
+        else:
+            if kind == "SWIPE":
+                raise ValueError(
+                    "SWIPE has no start/end coordinates or usable path points. "
+                    "Its bounding box does not preserve swipe direction; record this workflow again."
+                )
+            if not all(key in action for key in ("left", "top", "right", "bottom")):
+                raise ValueError("Gesture has no usable coordinates or legacy bounds; refusing to touch.")
+            try:
+                old_w = max(1, int(action.get("screenWidth") or recorded_width or current_width))
+                old_h = max(1, int(action.get("screenHeight") or recorded_height or current_height))
+                left, top = int(action["left"]), int(action["top"])
+                right, bottom = int(action["right"]), int(action["bottom"])
+            except (TypeError, ValueError, KeyError):
+                raise ValueError("Gesture has invalid legacy bounds; refusing to guess a touch location.")
+            x_fraction = ((left + right) / 2.0) / max(1, old_w - 1)
+            y_fraction = ((top + bottom) / 2.0) / max(1, old_h - 1)
+            start = (
+                max(0.0, min(1.0, x_fraction)),
+                max(0.0, min(1.0, y_fraction)),
+            )
+            end = start
+
+    sxn, syn = start
+    exn, eyn = end
+    sxn, syn = rotate_normalized_point(sxn, syn, recorded_rotation, current_rotation)
+    exn, eyn = rotate_normalized_point(exn, eyn, recorded_rotation, current_rotation)
+
+    def to_pixel(value: float, size: int) -> int:
+        return int(round(max(0.0, min(1.0, value)) * max(0, size - 1)))
+
+    return (
+        to_pixel(sxn, current_width),
+        to_pixel(syn, current_height),
+        to_pixel(exn, current_width),
+        to_pixel(eyn, current_height),
+    )
+
+
+def require_gesture_actions(actions: list[Any]) -> list[dict]:
+    """Reject mixed semantic workflows instead of silently skipping steps."""
+    if not isinstance(actions, list):
+        raise ValueError("Workflow actions must be a JSON array.")
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict):
+            raise ValueError(f"Action {index} is not a JSON object; refusing to skip it.")
+        action_type = str(action.get("type") or "").upper()
+        if action_type != "GESTURE":
+            raise ValueError(
+                f"Action {index} has type {action_type or '(missing)'}. "
+                "This ADB-only replayer supports raw GESTURE actions only and refuses to "
+                "skip other action types, because skipping steps can make later touches land on the wrong screen."
+            )
+    return actions
+
+
+def swipe_path_deviation_px(action: dict, width: int, height: int,
+                            recorded_rotation: Optional[int] = None,
+                            current_rotation: Optional[int] = None) -> Optional[float]:
+    """Return maximum deviation of recorded path samples from the straight ADB swipe."""
+    points = action.get("gesturePoints")
+    if not isinstance(points, list) or len(points) < 3:
+        return None
+    normalized = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        pair = _normalized_pair(point.get("x"), point.get("y"))
+        if pair is None:
+            continue
+        x, y = rotate_normalized_point(pair[0], pair[1], recorded_rotation, current_rotation)
+        normalized.append((x * max(0, width - 1), y * max(0, height - 1)))
+    if len(normalized) < 3:
+        return None
+    x1, y1 = normalized[0]
+    x2, y2 = normalized[-1]
+    dx, dy = x2 - x1, y2 - y1
+    length_sq = dx * dx + dy * dy
+    maximum = 0.0
+    for x, y in normalized[1:-1]:
+        if length_sq <= 1e-9:
+            distance = math.hypot(x - x1, y - y1)
+        else:
+            t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+            projection_x, projection_y = x1 + t * dx, y1 + t * dy
+            distance = math.hypot(x - projection_x, y - projection_y)
+        maximum = max(maximum, distance)
+    return maximum
 
 
 def recorded_gap_ms(action: dict, previous: Optional[dict]) -> int:
@@ -246,12 +384,15 @@ def wait_for_expected_state(serial: Optional[str], action: dict, timeout_ms: int
 
 
 def dispatch_action(serial: Optional[str], action: dict, width: int, height: int,
-                    recorded_width: int, recorded_height: int, dry_run: bool) -> str:
+                    recorded_width: int, recorded_height: int, dry_run: bool,
+                    recorded_rotation: Optional[int] = None,
+                    current_rotation: Optional[int] = None) -> str:
     kind = str(action.get("gestureKind") or "").upper()
     if str(action.get("type", "")).upper() != "GESTURE":
         raise ValueError(f"Action type {action.get('type')!r} is not a raw ADB gesture.")
     x1, y1, x2, y2 = action_coordinates(
-        action, recorded_width, recorded_height, width, height
+        action, recorded_width, recorded_height, width, height,
+        recorded_rotation=recorded_rotation, current_rotation=current_rotation
     )
     duration = max(50, min(10_000, int(action.get("gestureDurationMs") or 350)))
     if kind == "TAP":
@@ -276,12 +417,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Maximum replay wait before any step (default 5 minutes)")
     parser.add_argument("--verify-timeout-ms", type=int, default=15_000,
                         help="How long to wait for a recorded pre-touch screen state (default 15 seconds)")
-    parser.add_argument("--no-verify-state", action="store_true",
-                        help="Disable foreground/window checks before actions")
+    verification = parser.add_mutually_exclusive_group()
+    verification.add_argument("--verify-state", dest="verify_state", action="store_true",
+                              help="Enable best-effort screen-state checks before actions (opt-in)")
+    verification.add_argument("--no-verify-state", dest="verify_state", action="store_false",
+                              help="Disable screen-state checks (default; kept for compatibility)")
+    parser.set_defaults(verify_state=False)
     parser.add_argument("--no-verify-ui", action="store_true",
                         help="Do not compare visible text even when a UI hierarchy snapshot exists")
     parser.add_argument("--allow-rotation-change", action="store_true",
-                        help="Allow replay if display orientation differs from the recording")
+                        help="Allow a different display orientation and transform normalized coordinates")
+    parser.add_argument("--rotation", type=int, choices=(0, 1, 2, 3),
+                        help="Override current display rotation if auto-detection is unavailable or incorrect")
     parser.add_argument("--dry-run", action="store_true", help="Print planned waits/actions without touching the phone")
     parser.add_argument("--limit", type=int, default=0, help="Replay only the first N actions (0 means all)")
     parser.add_argument("--log", default="adb-replay-log.jsonl", help="Replay log output path")
@@ -297,25 +444,46 @@ def main(argv: Optional[list[str]] = None) -> int:
         if device_state != "device":
             raise RuntimeError("ADB device is not authorized. Check adb devices and accept the phone prompt.")
         actions, payload = load_actions(input_path)
-        actions = [a for a in actions if isinstance(a, dict) and str(a.get("type", "")).upper() == "GESTURE"]
+        actions = require_gesture_actions(actions)
         if args.limit > 0:
             actions = actions[:args.limit]
         if not actions:
             raise ValueError("No GESTURE actions found in this JSON file.")
 
-        width, height, rotation = get_display(args.serial)
+        width, height, rotation = get_display(args.serial, args.rotation)
+        if rotation is None:
+            raise RuntimeError(
+                "Could not determine current display rotation. Refusing to replay because touch coordinates may be wrong. "
+                "Check the phone orientation or pass --rotation 0, 1, 2, or 3."
+            )
         recorded_screen = payload.get("screen", {}) if isinstance(payload, dict) else {}
-        recorded_rotation = recorded_screen.get("rotation")
-        if rotation is not None and recorded_rotation is not None and rotation != int(recorded_rotation):
+        recorded_rotation_value = recorded_screen.get("rotation")
+        if recorded_rotation_value is None:
+            recorded_rotation_value = next(
+                (action.get("displayRotation") for action in actions if action.get("displayRotation") is not None),
+                None,
+            )
+        try:
+            recorded_rotation = int(recorded_rotation_value) if recorded_rotation_value is not None else None
+        except (TypeError, ValueError):
+            recorded_rotation = None
+
+        if recorded_rotation is not None and rotation != recorded_rotation:
             message = f"Display rotation differs (recorded={recorded_rotation}, current={rotation})."
             if not args.allow_rotation_change:
                 raise RuntimeError(message + " Rotate the phone back to the recording orientation, or pass --allow-rotation-change.")
-            print("WARNING: " + message + " Normalized coordinates will be scaled to the current display.")
+            print("WARNING: " + message + " Normalized coordinates will be transformed for the new orientation.")
+        elif recorded_rotation is None:
+            print("WARNING: recording has no rotation metadata; keep the phone in the same orientation used during capture.")
 
         recorded_width = int(recorded_screen.get("width") or actions[0].get("screenWidth") or width)
         recorded_height = int(recorded_screen.get("height") or actions[0].get("screenHeight") or height)
         print(f"Device ready. Display={width}x{height}, rotation={rotation}; actions={len(actions)}")
         print("Replay uses ADB shell input. Keep the phone unlocked and do not touch it during replay.")
+        if args.verify_state:
+            print("Screen-state verification: ON (best-effort; may stop on mismatches).")
+        else:
+            print("WARNING: screen-state verification is OFF; replay will not stop if the phone is on the wrong screen.")
         if args.dry_run:
             print("DRY RUN: no input will be sent to the phone.")
 
@@ -337,7 +505,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if gap and not args.dry_run:
                     time.sleep(gap / 1000)
 
-                if not args.no_verify_state:
+                if args.verify_state:
                     matched, reason = wait_for_expected_state(
                         args.serial, action, args.verify_timeout_ms,
                         verify_ui=not args.no_verify_ui, dry_run=args.dry_run
@@ -354,10 +522,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 points = action.get("gesturePoints") or []
                 if str(action.get("gestureKind", "")).upper() == "SWIPE" and len(points) > 2:
-                    print(f"    NOTE: {len(points)} path samples were recorded; standard ADB shell input replays this as a straight swipe between endpoints.")
+                    deviation = swipe_path_deviation_px(
+                        action, width, height, recorded_rotation, rotation
+                    )
+                    if deviation is None:
+                        print(f"    NOTE: {len(points)} path samples were recorded; ADB shell input can replay only a straight swipe between endpoints.")
+                    else:
+                        print(
+                            f"    NOTE: ADB shell input approximates {len(points)} recorded path samples as a straight swipe; "
+                            f"maximum path deviation is about {deviation:.0f} px, so curved swipes may behave differently."
+                        )
                 command = dispatch_action(
                     args.serial, action, width, height,
-                    recorded_width, recorded_height, args.dry_run
+                    recorded_width, recorded_height, args.dry_run,
+                    recorded_rotation=recorded_rotation, current_rotation=rotation
                 )
                 print(f"    ADB: {command}")
                 log.write(json.dumps({
