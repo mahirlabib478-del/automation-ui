@@ -82,6 +82,61 @@ class ReplayPolicyTest {
         assertTrue(ReplayPolicy.scoreNode(snapshot, textAction) >= ReplayPolicy.minimumScore(textAction))
     }
 
+    @Test fun normalizedGestureCoordinatesScaleToCurrentDisplay() {
+        assertEquals(0, ReplayPolicy.normalizedCoordinate(0, 1080))
+        assertEquals(539, ReplayPolicy.normalizedCoordinate(5000, 1080))
+        assertEquals(1079, ReplayPolicy.normalizedCoordinate(10000, 1080))
+        assertEquals(0, ReplayPolicy.normalizedCoordinate(5000, 0))
+    }
+
+    @Test fun unknownGestureRotationIsAllowedButKnownMismatchIsBlocked() {
+        assertTrue(ReplayPolicy.gestureRotationMatches(-1, 1))
+        assertTrue(ReplayPolicy.gestureRotationMatches(1, 1))
+        assertFalse(ReplayPolicy.gestureRotationMatches(0, 1))
+    }
+
+    private fun gesture(
+        timestamp: Long,
+        kind: String,
+        x: Int = 5000,
+        y: Int = 5000,
+        endX: Int = x,
+        endY: Int = y
+    ) = RecordedAction(
+        type = "GESTURE", packageName = null, text = "ADB captured $kind",
+        viewId = null, contentDescription = null, className = null,
+        left = 0, top = 0, right = 0, bottom = 0,
+        screenWidth = 1080, screenHeight = 2400, scrollDeltaY = endY - y,
+        timestamp = timestamp, displayRotation = 0, gestureKind = kind,
+        gestureStartX = x, gestureStartY = y, gestureEndX = endX, gestureEndY = endY,
+        gestureDurationMs = 250
+    )
+
+    @Test fun gestureSchemaRejectsMissingCoordinatesAndAcceptsValidGesture() {
+        assertTrue(isValidGesture(gesture(1000, "TAP")))
+        assertFalse(isValidGesture(gesture(1000, "UNKNOWN")))
+        assertFalse(isValidGesture(gesture(1000, "SWIPE").copy(gestureEndX = -1)))
+    }
+
+    @Test fun mergeRemovesTapAlreadyCapturedAsSemanticClick() {
+        val click = action(
+            type = "CLICK", timestamp = 2_000L, text = "Continue",
+            left = 450, top = 900, right = 550, bottom = 1_100,
+            screenWidth = 1_000, screenHeight = 2_000
+        )
+        val tap = gesture(2_500L, "TAP", x = 5000, y = 5000)
+        val merged = mergeRecordedActions(listOf(click), listOf(tap))
+        assertEquals(1, merged.size)
+        assertEquals("CLICK", merged.single().type)
+    }
+
+    @Test fun mergeKeepsGestureWhenNoSemanticActionMatches() {
+        val swipe = gesture(10_000L, "SWIPE", x = 5000, y = 8000, endX = 5000, endY = 2000)
+        val merged = mergeRecordedActions(emptyList(), listOf(swipe))
+        assertEquals(1, merged.size)
+        assertEquals("GESTURE", merged.single().type)
+    }
+
     @Test fun setTextWillNeverSelectANonEditableNode() {
         val textAction = action(type = "SET_TEXT", inputValue = "new value", viewId = "app:id/search")
         val snapshot = NodeSnapshot(

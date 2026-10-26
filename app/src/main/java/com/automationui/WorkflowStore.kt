@@ -22,7 +22,13 @@ data class RecordedAction(
     val inputValue: String? = null,
     val hintText: String? = null,
     val displayRotation: Int = 0,
-    val schemaVersion: Int = 2
+    val schemaVersion: Int = 2,
+    val gestureKind: String? = null,
+    val gestureStartX: Int = -1,
+    val gestureStartY: Int = -1,
+    val gestureEndX: Int = -1,
+    val gestureEndY: Int = -1,
+    val gestureDurationMs: Long = 350L
 ) {
     fun toJson() = JSONObject().apply {
         put("type", type)
@@ -38,6 +44,12 @@ data class RecordedAction(
         put("hintText", hintText ?: JSONObject.NULL)
         put("displayRotation", displayRotation)
         put("schemaVersion", schemaVersion)
+        put("gestureKind", gestureKind ?: JSONObject.NULL)
+        put("gestureStartX", gestureStartX)
+        put("gestureStartY", gestureStartY)
+        put("gestureEndX", gestureEndX)
+        put("gestureEndY", gestureEndY)
+        put("gestureDurationMs", gestureDurationMs)
     }
 
     companion object {
@@ -57,7 +69,13 @@ data class RecordedAction(
             } else null,
             hintText = obj.optString("hintText").takeUnless { it == "null" || it.isBlank() },
             displayRotation = obj.optInt("displayRotation", 0),
-            schemaVersion = obj.optInt("schemaVersion", 1)
+            schemaVersion = obj.optInt("schemaVersion", 1),
+            gestureKind = obj.optString("gestureKind").takeUnless { it == "null" || it.isBlank() },
+            gestureStartX = obj.optInt("gestureStartX", -1),
+            gestureStartY = obj.optInt("gestureStartY", -1),
+            gestureEndX = obj.optInt("gestureEndX", -1),
+            gestureEndY = obj.optInt("gestureEndY", -1),
+            gestureDurationMs = obj.optLong("gestureDurationMs", 350L)
         )
     }
 }
@@ -133,6 +151,49 @@ object WorkflowStore {
         prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
     }
 
+
+    fun exportJson(context: Context): String {
+        val exported = JSONArray().apply {
+            actions(context).forEach { put(it.toJson()) }
+        }
+        return JSONObject()
+            .put("format", "automation-ui-workflow")
+            .put("schemaVersion", 2)
+            .put("exportedAt", System.currentTimeMillis())
+            .put("actions", exported)
+            .toString(2)
+    }
+
+    fun importJson(context: Context, source: String, merge: Boolean = true): Int {
+        val trimmed = source.trim()
+        require(trimmed.isNotEmpty()) { "The selected file is empty." }
+        val array = if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            val root = JSONObject(trimmed)
+            require(root.optString("format").isBlank() ||
+                root.optString("format") == "automation-ui-workflow" ||
+                root.optString("format") == "adb-gesture-capture"
+            ) { "Unsupported workflow JSON format." }
+            root.optJSONArray("actions") ?: throw IllegalArgumentException("JSON file has no actions array.")
+        }
+
+        val incoming = (0 until array.length()).map { index ->
+            RecordedAction.fromJson(array.getJSONObject(index))
+        }
+        val supportedTypes = setOf("CLICK", "SET_TEXT", "SCROLL", "OPEN_SETTINGS", "HOME", "BACK", "GESTURE")
+        require(incoming.all { it.type in supportedTypes }) { "The file contains an unsupported action type." }
+        require(incoming.all { it.type != "GESTURE" || isValidGesture(it) }) {
+            "The file contains a gesture with missing or invalid coordinates."
+        }
+
+        val existing = actions(context)
+        val result = if (merge) mergeRecordedActions(existing, incoming) else incoming.sortedBy { it.timestamp }
+        val output = JSONArray().apply { result.forEach { put(it.toJson()) } }
+        prefs(context).edit().putString(KEY_ACTIONS, output.toString()).apply()
+        return (result.size - existing.size).coerceAtLeast(0)
+    }
+
     fun clear(context: Context) { prefs(context).edit().putString(KEY_ACTIONS, "[]").apply() }
 
     fun removeLastActionIfType(context: Context, type: String): Boolean {
@@ -169,4 +230,84 @@ object WorkflowStore {
     fun clearReplayLog(context: Context) {
         prefs(context).edit().putString(KEY_REPLAY_LOG, "[]").apply()
     }
+}
+
+internal fun isValidGesture(action: RecordedAction): Boolean {
+    val kind = action.gestureKind?.uppercase() ?: return false
+    if (kind !in setOf("TAP", "SWIPE", "LONG_PRESS")) return false
+    val coords = listOf(action.gestureStartX, action.gestureStartY, action.gestureEndX, action.gestureEndY)
+    if (coords.any { it !in 0..10_000 }) return false
+    if (action.screenWidth <= 0 || action.screenHeight <= 0) return false
+    return action.gestureDurationMs in 50L..5_000L
+}
+
+internal fun mergeRecordedActions(
+    existing: List<RecordedAction>,
+    incoming: List<RecordedAction>
+): List<RecordedAction> {
+    val accepted = mutableListOf<RecordedAction>()
+    val consumedExisting = mutableSetOf<Int>()
+
+    fun sameImportedAction(a: RecordedAction, b: RecordedAction): Boolean =
+        a.type == b.type && a.timestamp == b.timestamp && a.packageName == b.packageName &&
+            a.text == b.text && a.viewId == b.viewId && a.inputValue == b.inputValue &&
+            a.gestureKind == b.gestureKind && a.gestureStartX == b.gestureStartX &&
+            a.gestureStartY == b.gestureStartY && a.gestureEndX == b.gestureEndX &&
+            a.gestureEndY == b.gestureEndY
+
+    fun gestureCenter(action: RecordedAction): Pair<Float, Float> =
+        ((action.gestureStartX + action.gestureEndX) / 20_000f) to
+            ((action.gestureStartY + action.gestureEndY) / 20_000f)
+
+    fun actionCenter(action: RecordedAction): Pair<Float, Float>? {
+        if (action.right <= action.left || action.bottom <= action.top ||
+            action.screenWidth <= 0 || action.screenHeight <= 0
+        ) return null
+        return (((action.left + action.right) / 2f) / action.screenWidth) to
+            (((action.top + action.bottom) / 2f) / action.screenHeight)
+    }
+
+    fun near(a: Pair<Float, Float>, b: Pair<Float, Float>, maxDistance: Float): Boolean {
+        val dx = a.first - b.first
+        val dy = a.second - b.second
+        return kotlin.math.sqrt(dx * dx + dy * dy) <= maxDistance
+    }
+
+    for (candidate in incoming.sortedBy { it.timestamp }) {
+        if (existing.any { sameImportedAction(it, candidate) } ||
+            accepted.any { sameImportedAction(it, candidate) }
+        ) continue
+
+        if (candidate.type == "GESTURE") {
+            val kind = candidate.gestureKind?.uppercase()
+            val center = gestureCenter(candidate)
+            val matchingIndex = existing.indices
+                .filter { it !in consumedExisting }
+                .filter { index ->
+                    val other = existing[index]
+                    val elapsed = kotlin.math.abs(candidate.timestamp - other.timestamp)
+                    when (kind) {
+                        "TAP", "LONG_PRESS" -> {
+                            val otherCenter = actionCenter(other)
+                            other.type == "CLICK" && elapsed <= 2_000L &&
+                                otherCenter != null && near(center, otherCenter, 0.18f)
+                        }
+                        "SWIPE" -> {
+                            val otherCenter = actionCenter(other)
+                            other.type == "SCROLL" && elapsed <= 2_000L &&
+                                otherCenter != null && near(center, otherCenter, 0.48f)
+                        }
+                        else -> false
+                    }
+                }
+                .minByOrNull { index -> kotlin.math.abs(candidate.timestamp - existing[index].timestamp) }
+
+            if (matchingIndex != null) {
+                consumedExisting.add(matchingIndex)
+                continue
+            }
+        }
+        accepted.add(candidate)
+    }
+    return (existing + accepted).sortedBy { it.timestamp }
 }

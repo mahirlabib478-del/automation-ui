@@ -2,6 +2,8 @@ package com.automationui
 
 import android.content.Intent
 import android.os.Bundle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -52,6 +54,44 @@ class MainActivity : ComponentActivity() {
         var actions by remember { mutableStateOf(WorkflowStore.actions(this).toList()) }
         var replayLogs by remember { mutableStateOf(WorkflowStore.replayLogs(this)) }
         var recordText by remember { mutableStateOf(WorkflowStore.isRecordingText(this)) }
+
+        val exportLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/json")
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    val payload = WorkflowStore.exportJson(this@MainActivity)
+                    contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(payload.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("Could not open the selected export destination.")
+                }.onSuccess {
+                    WorkflowStore.setStatus(this@MainActivity, "Workflow JSON exported")
+                    status = WorkflowStore.status(this@MainActivity)
+                }.onFailure { error ->
+                    WorkflowStore.setStatus(this@MainActivity, "Export failed: ${error.message ?: "unknown error"}")
+                    status = WorkflowStore.status(this@MainActivity)
+                }
+            }
+        }
+
+        val importLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    val payload = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: throw IllegalStateException("Could not read the selected JSON file.")
+                    WorkflowStore.importJson(this@MainActivity, payload, merge = true)
+                }.onSuccess { added ->
+                    actions = WorkflowStore.actions(this@MainActivity).toList()
+                    WorkflowStore.setStatus(this@MainActivity, "Imported/merged workflow; ${added} new actions added")
+                    status = WorkflowStore.status(this@MainActivity)
+                }.onFailure { error ->
+                    WorkflowStore.setStatus(this@MainActivity, "Import failed: ${error.message ?: "invalid JSON"}")
+                    status = WorkflowStore.status(this@MainActivity)
+                }
+            }
+        }
 
         LaunchedEffect(Unit) {
             while (true) {
@@ -195,6 +235,22 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Clear workflow") }
 
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { exportLauncher.launch("automation-workflow.json") },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Export JSON") }
+                        OutlinedButton(
+                            onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Import / merge JSON") }
+                    }
+                    Text(
+                        "Import ADB gesture JSON here. Taps and scrolls already captured by Accessibility are deduplicated.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
                     Divider()
                     Text("Replay diagnostics", style = MaterialTheme.typography.titleMedium)
                     if (replayLogs.isEmpty()) {
@@ -230,6 +286,12 @@ class MainActivity : ComponentActivity() {
                                     Text(action.packageName ?: "System action", style = MaterialTheme.typography.bodySmall)
                                     if (!action.text.isNullOrBlank()) Text(action.text, style = MaterialTheme.typography.bodyMedium)
                                     if (!action.viewId.isNullOrBlank()) Text(action.viewId, style = MaterialTheme.typography.labelSmall)
+                                    if (action.type == "GESTURE") {
+                                        Text(
+                                            "${action.gestureKind ?: "UNKNOWN"} · ${action.gestureDurationMs} ms",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
                                 }
                             }
                         }

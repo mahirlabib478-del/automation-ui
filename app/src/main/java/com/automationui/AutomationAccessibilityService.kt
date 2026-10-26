@@ -425,6 +425,20 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (!replaying) return
 
         when (action.type) {
+            "GESTURE" -> {
+                if (!isValidGesture(action)) {
+                    setReplayStatus("Skipped gesture: invalid or missing coordinates")
+                    done()
+                } else if (!ReplayPolicy.gestureRotationMatches(action.displayRotation, currentDisplayRotation())) {
+                    setReplayStatus("Skipped gesture: display orientation changed")
+                    done()
+                } else {
+                    dispatchRecordedGesture(action) {
+                        waitForNextTarget(nextAction, 150L, 0L, done)
+                    }
+                }
+            }
+
             "OPEN_SETTINGS" -> {
                 runCatching {
                     startActivity(
@@ -800,6 +814,39 @@ class AutomationAccessibilityService : AccessibilityService() {
     private fun currentDisplayRotation(): Int {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         return windowManager.defaultDisplay.rotation
+    }
+
+
+    private fun dispatchRecordedGesture(action: RecordedAction, done: () -> Unit) {
+        val display = realDisplaySize()
+        val startX = ReplayPolicy.normalizedCoordinate(action.gestureStartX, display.first).toFloat()
+        val startY = ReplayPolicy.normalizedCoordinate(action.gestureStartY, display.second).toFloat()
+        val endX = ReplayPolicy.normalizedCoordinate(action.gestureEndX, display.first).toFloat()
+        val endY = ReplayPolicy.normalizedCoordinate(action.gestureEndY, display.second).toFloat()
+        val kind = action.gestureKind?.uppercase()
+        val duration = action.gestureDurationMs.coerceIn(50L, 5_000L)
+        val path = Path().apply {
+            moveTo(startX, startY)
+            if (kind == "SWIPE") lineTo(endX, endY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            .build()
+        val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                setReplayStatus("ADB gesture replayed: $kind")
+                handler.postDelayed(done, 200L)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                setReplayStatus("ADB gesture cancelled: $kind")
+                done()
+            }
+        }, handler)
+        if (!accepted) {
+            setReplayStatus("ADB gesture rejected by Android")
+            done()
+        }
     }
 
     private fun dispatchTap(action: RecordedAction, done: () -> Unit) {

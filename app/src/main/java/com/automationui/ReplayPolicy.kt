@@ -32,6 +32,16 @@ internal object ReplayPolicy {
 
     fun scrollForward(deltaY: Int): Boolean = deltaY >= 0
 
+    fun normalizedCoordinate(value: Int, displaySize: Int): Int {
+        if (displaySize <= 0) return 0
+        return ((value.coerceIn(0, 10_000) / 10_000f) * (displaySize - 1))
+            .toInt()
+            .coerceIn(0, displaySize - 1)
+    }
+
+    fun gestureRotationMatches(recordedRotation: Int, currentRotation: Int): Boolean =
+        recordedRotation < 0 || recordedRotation == currentRotation
+
     fun hasSemanticSelector(action: RecordedAction): Boolean {
         val legacyTextWasInputValue = action.type == "SET_TEXT" && action.inputValue == null
         return !action.viewId.isNullOrBlank() ||
