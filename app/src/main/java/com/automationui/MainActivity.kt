@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         var recording by remember { mutableStateOf(WorkflowStore.isRecording(this)) }
         var status by remember { mutableStateOf(WorkflowStore.status(this)) }
         var actions by remember { mutableStateOf(WorkflowStore.actions(this).toList()) }
+        var replayLogs by remember { mutableStateOf(WorkflowStore.replayLogs(this)) }
         var recordText by remember { mutableStateOf(WorkflowStore.isRecordingText(this)) }
 
         LaunchedEffect(Unit) {
@@ -57,6 +58,7 @@ class MainActivity : ComponentActivity() {
                 recording = WorkflowStore.isRecording(this@MainActivity)
                 status = WorkflowStore.status(this@MainActivity)
                 actions = WorkflowStore.actions(this@MainActivity).toList()
+                replayLogs = WorkflowStore.replayLogs(this@MainActivity)
                 recordText = WorkflowStore.isRecordingText(this@MainActivity)
                 delay(500)
             }
@@ -105,6 +107,7 @@ class MainActivity : ComponentActivity() {
                         }
                         Button(
                             onClick = {
+                                WorkflowStore.clearReplayLog(this@MainActivity)
                                 sendBroadcast(Intent(AutomationAccessibilityService.ACTION_REPLAY).setPackage(packageName))
                                 WorkflowStore.setStatus(this@MainActivity, "Replay requested")
                             },
@@ -149,12 +152,31 @@ class MainActivity : ComponentActivity() {
                     OutlinedButton(
                         onClick = {
                             WorkflowStore.clear(this@MainActivity)
+                            WorkflowStore.clearReplayLog(this@MainActivity)
                             actions = emptyList()
+                            replayLogs = emptyList()
                             WorkflowStore.setStatus(this@MainActivity, "Workflow cleared")
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Clear workflow") }
 
+                    Divider()
+                    Text("Replay diagnostics", style = MaterialTheme.typography.titleMedium)
+                    if (replayLogs.isEmpty()) {
+                        Text(
+                            "Run Replay to see which actions succeeded or were skipped.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        replayLogs.takeLast(4).asReversed().forEach { line ->
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2
+                            )
+                        }
+                    }
                     Divider()
                     Text("Recorded actions", style = MaterialTheme.typography.titleMedium)
                     Text(
