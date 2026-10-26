@@ -27,7 +27,7 @@ DEVICE_HEADER = re.compile(r"^add device \d+:\s*(/dev/input/\S+)", re.MULTILINE)
 EVENT_LINE = re.compile(
     r"^\[\s*(?P<time>\d+(?:\.\d+)?)\]\s+"
     r"(?:(?P<device>/dev/input/\S+):\s+)?"
-    r"(?P<event>\S+)\s+(?P<code>\S+)\s+(?P<value>[0-9a-fA-F-]+|DOWN|UP)"
+    r"(?P<event>\S+)\s+(?P<code>\S+)\s+(?P<value>DOWN|UP|[0-9a-fA-F-]+)"
 )
 
 
