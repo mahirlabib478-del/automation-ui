@@ -304,37 +304,48 @@ class AutomationAccessibilityService : AccessibilityService() {
     private fun findNode(root: AccessibilityNodeInfo, action: RecordedAction): AccessibilityNodeInfo? {
         val id = action.viewId
         if (!id.isNullOrBlank()) {
-            val matches = runCatching { root.findAccessibilityNodeInfosByViewId(id) }.getOrNull()
-            matches?.firstOrNull { it.isVisibleToUser }?.let { selected ->
+            val matches = runCatching { root.findAccessibilityNodeInfosByViewId(id) }.getOrNull().orEmpty()
+            val selected = matches.firstOrNull { it.isVisibleToUser }
+            if (selected != null) {
                 matches.filter { it !== selected }.forEach { it.recycle() }
                 return selected
             }
-            matches?.forEach { it.recycle() }
+            matches.forEach { it.recycle() }
         }
 
         val description = action.contentDescription
         if (!description.isNullOrBlank()) {
-            val matches = runCatching { root.findAccessibilityNodeInfosByText(description) }.getOrNull()
-            matches?.firstOrNull()?.let { selected ->
-                matches.filter { it !== selected }.forEach { it.recycle() }
-                return selected
-            }
-            matches?.forEach { it.recycle() }
+            val selected = findNodeByLabel(root, description)
+            if (selected != null) return selected
         }
 
         val text = action.text
         if (!text.isNullOrBlank()) {
-            val matches = runCatching { root.findAccessibilityNodeInfosByText(text) }.getOrNull()
-            matches?.firstOrNull()?.let { selected ->
+            val matches = runCatching { root.findAccessibilityNodeInfosByText(text) }.getOrNull().orEmpty()
+            val selected = matches.firstOrNull { it.isVisibleToUser }
+            if (selected != null) {
                 matches.filter { it !== selected }.forEach { it.recycle() }
                 return selected
             }
-            matches?.forEach { it.recycle() }
+            matches.forEach { it.recycle() }
         }
 
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue
             val found = findNode(child, action)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findNodeByLabel(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
+        if (root.contentDescription?.toString()?.equals(label, ignoreCase = true) == true) {
+            return AccessibilityNodeInfo.obtain(root)
+        }
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findNodeByLabel(child, label)
             child.recycle()
             if (found != null) return found
         }
