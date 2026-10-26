@@ -23,6 +23,8 @@ import android.view.accessibility.AccessibilityNodeInfo
 class AutomationAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var replaying = false
+    private var replayActionIndex = 0
+    private var replayActionCount = 0
     private var lastForegroundPackage: String? = null
 
     private val replayReceiver = object : BroadcastReceiver() {
@@ -193,27 +195,42 @@ class AutomationAccessibilityService : AccessibilityService() {
             WorkflowStore.setStatus(this, "No actions recorded")
             return
         }
+        WorkflowStore.clearReplayLog(this)
         replaying = true
+        replayActionIndex = 0
+        replayActionCount = actions.size
         WorkflowStore.setRecording(this, false)
-        WorkflowStore.setStatus(this, "Replaying ${actions.size} actions…")
+        setReplayStatus("Replay started: ${actions.size} actions")
         runActionAt(actions, 0)
     }
 
     private fun stopReplay() {
         replaying = false
         handler.removeCallbacksAndMessages(null)
-        WorkflowStore.setStatus(this, "Replay stopped")
+        setReplayStatus("Replay stopped")
+    }
+
+    private fun setReplayStatus(message: String) {
+        val prefix = if (replayActionIndex > 0 && replayActionCount > 0) {
+            "Action ${replayActionIndex}/${replayActionCount}: "
+        } else ""
+        val line = prefix + message
+        WorkflowStore.setStatus(this, line)
+        WorkflowStore.addReplayLog(this, line)
     }
 
     private fun runActionAt(actions: List<RecordedAction>, index: Int) {
         if (!replaying) return
         if (index >= actions.size) {
             replaying = false
-            WorkflowStore.setStatus(this, "Replay finished")
+            replayActionIndex = 0
+            setReplayStatus("Replay finished")
             return
         }
 
         val action = actions[index]
+        replayActionIndex = index + 1
+        setReplayStatus("Running ${action.type}")
         val delay = if (index == 0) 0L else
             (action.timestamp - actions[index - 1].timestamp).coerceIn(250L, 3000L)
 
@@ -236,11 +253,13 @@ class AutomationAccessibilityService : AccessibilityService() {
         when (action.type) {
             "HOME" -> {
                 performGlobalAction(GLOBAL_ACTION_HOME)
+                setReplayStatus("HOME action sent")
                 waitForNextTarget(nextAction, 350L, 0L, done)
             }
 
             "BACK" -> {
                 performGlobalAction(GLOBAL_ACTION_BACK)
+                setReplayStatus("BACK action sent")
                 waitForNextTarget(nextAction, 350L, 0L, done)
             }
 
@@ -256,10 +275,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                             250L
                         )
                     } else {
-                        WorkflowStore.setStatus(
-                            this,
-                            "Skipped ${action.type}: expected screen ${action.packageName ?: "(unknown)"} not active"
-                        )
+                        setReplayStatus("Skipped ${action.type}: expected screen ${action.packageName ?: "(unknown)"} not active")
                         done()
                     }
                     return
@@ -273,11 +289,13 @@ class AutomationAccessibilityService : AccessibilityService() {
                         if (node != null) {
                             val clicked = clickNodeOrParent(node)
                             if (clicked) {
+                                setReplayStatus("CLICK selector matched and activated")
                                 waitForNextTarget(nextAction, 350L, 0L, done)
                             } else {
                                 // The matched node was not actionable. A coordinate
                                 // fallback is safer here than choosing another selector.
                                 if (hasValidBounds(action)) {
+                                    setReplayStatus("CLICK used coordinate fallback")
                                     dispatchTap(action) {
                                         waitForNextTarget(nextAction, 350L, 0L, done)
                                     }
@@ -287,6 +305,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 }
                             }
                         } else if (!hasSemanticSelector(action) && hasValidBounds(action)) {
+                            setReplayStatus("CLICK used coordinate fallback")
                             dispatchTap(action) {
                                 waitForNextTarget(nextAction, 350L, 0L, done)
                             }
@@ -298,10 +317,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 250L
                             )
                         } else {
-                            WorkflowStore.setStatus(
-                                this,
-                                "Skipped click: recorded UI target not found (${action.text ?: action.viewId ?: action.contentDescription ?: "no label"})"
-                            )
+                            setReplayStatus("Skipped click: recorded UI target not found")
                             done()
                         }
                     }
@@ -314,7 +330,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                     250L
                                 )
                             } else {
-                                WorkflowStore.setStatus(this, "Skipped text input: recorded field not found")
+                                setReplayStatus("Skipped text input: recorded field not found")
                                 done()
                             }
                         } else {
@@ -328,9 +344,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                             }
                             node.recycle()
-                            if (!result) {
-                                WorkflowStore.setStatus(this, "Text input could not be replayed")
-                            }
+                            setReplayStatus(if (result) "Text input applied" else "Text input failed")
                             waitForNextTarget(nextAction, 350L, 0L, done)
                         }
                     }
@@ -354,13 +368,15 @@ class AutomationAccessibilityService : AccessibilityService() {
                             } else false
 
                             if (scrolled) {
+                                setReplayStatus("Accessibility scroll applied")
                                 waitForNextTarget(nextAction, 400L, 0L, done)
                             } else if (hasValidBounds(action)) {
+                                setReplayStatus("Scroll used swipe fallback")
                                 dispatchSwipe(action, action.scrollDeltaY >= 0) {
                                     waitForNextTarget(nextAction, 400L, 0L, done)
                                 }
                             } else {
-                                WorkflowStore.setStatus(this, "Skipped scroll: no usable scroll target or bounds")
+                                setReplayStatus("Skipped scroll: no usable scroll target or bounds")
                                 done()
                             }
                         }
@@ -411,7 +427,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             if (ready && nextElapsed >= minimumDelayMs) {
                 done()
             } else if (nextElapsed >= 5000L) {
-                WorkflowStore.setStatus(this, "Next screen/target timed out; replay continuing")
+                setReplayStatus("Next screen/target timed out; replay continuing")
                 done()
             } else {
                 waitForNextTarget(nextAction, minimumDelayMs, nextElapsed, done)
@@ -560,12 +576,12 @@ class AutomationAccessibilityService : AccessibilityService() {
                 handler.postDelayed(done, 350L)
             }
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                WorkflowStore.setStatus(this@AutomationAccessibilityService, "Tap gesture cancelled")
+                setReplayStatus("Tap gesture cancelled")
                 done()
             }
         }, handler)
         if (!accepted) {
-            WorkflowStore.setStatus(this, "Tap gesture was rejected by Android")
+            setReplayStatus("Tap gesture was rejected by Android")
             done()
         }
     }
@@ -614,12 +630,12 @@ class AutomationAccessibilityService : AccessibilityService() {
                 handler.postDelayed(done, 400L)
             }
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                WorkflowStore.setStatus(this@AutomationAccessibilityService, "Swipe gesture cancelled")
+                setReplayStatus("Swipe gesture cancelled")
                 done()
             }
         }, handler)
         if (!accepted) {
-            WorkflowStore.setStatus(this, "Swipe gesture was rejected by Android")
+            setReplayStatus("Swipe gesture was rejected by Android")
             done()
         }
     }
