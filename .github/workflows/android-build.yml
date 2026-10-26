@@ -62,9 +62,11 @@ jobs:
           6. Press Ctrl+C in the computer terminal to stop ADB capture.
           7. Preview the workflow without touching the phone:
              python adb_gesture_replayer.py --input adb-gestures.json --dry-run
-          8. To replay using ADB only:
+          8. To replay using ADB only (screen-state verification is OFF by default):
              python adb_gesture_replayer.py --input adb-gestures.json
-          9. Review adb-replay-log.jsonl if replay stops because the recorded screen state does not match.
+          9. Optional: enable best-effort screen-state checks with:
+             python adb_gesture_replayer.py --input adb-gestures.json --verify-state
+         10. Review adb-replay-log.jsonl for replayed coordinates and any warnings.
 
           NOTES
           - Keep the same display orientation during recording and replay.
@@ -72,7 +74,9 @@ jobs:
           - Password fields are excluded from text recording. Multi-touch is intentionally not approximated.
           - This is a debug build. Automated tests passed, but each target app/workflow still requires real-device verification.
           - ADB shell input supports common taps/swipes/long-presses, not every protected system gesture, secure screen, or multi-touch interaction.
-          - Review JSON and state snapshots before replay. Do not record passwords, payment screens, or private information.
+          - State verification is OFF by default to avoid false stops; the replayer will not stop if the phone is on the wrong screen. Use --verify-state when safety matters more than uninterrupted replay.
+          - ADB shell input replays swipes as straight lines, not the sampled curved path. Curved swipes can behave differently; the replayer warns when the recorded path deviates from a straight line.
+          - Review JSON and dry-run output before replay. Do not record passwords, payment screens, or private information.
           EOF
           test -s dist/app-debug.apk
           test -s dist/adb_gesture_recorder.py
