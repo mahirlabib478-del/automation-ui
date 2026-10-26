@@ -28,7 +28,9 @@ data class RecordedAction(
     val gestureStartY: Int = -1,
     val gestureEndX: Int = -1,
     val gestureEndY: Int = -1,
-    val gestureDurationMs: Long = 350L
+    val gestureDurationMs: Long = 350L,
+    val waitDurationMs: Long = 0L,
+    val waitTimeoutMs: Long = 15_000L
 ) {
     fun toJson() = JSONObject().apply {
         put("type", type)
@@ -50,6 +52,8 @@ data class RecordedAction(
         put("gestureEndX", gestureEndX)
         put("gestureEndY", gestureEndY)
         put("gestureDurationMs", gestureDurationMs)
+        put("waitDurationMs", waitDurationMs)
+        put("waitTimeoutMs", waitTimeoutMs)
     }
 
     companion object {
@@ -75,7 +79,9 @@ data class RecordedAction(
             gestureStartY = obj.optInt("gestureStartY", -1),
             gestureEndX = obj.optInt("gestureEndX", -1),
             gestureEndY = obj.optInt("gestureEndY", -1),
-            gestureDurationMs = obj.optLong("gestureDurationMs", 350L)
+            gestureDurationMs = obj.optLong("gestureDurationMs", 350L),
+            waitDurationMs = obj.optLong("waitDurationMs", 0L),
+            waitTimeoutMs = obj.optLong("waitTimeoutMs", 15_000L)
         )
     }
 }
@@ -147,8 +153,17 @@ object WorkflowStore {
         }
         if (action.type == "HOME" && array.length() > 0 &&
             runCatching { array.getJSONObject(array.length() - 1).optString("type") }.getOrNull() == "HOME") return
-        array.put(action.toJson())
-        prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
+        val existing = (0 until array.length()).map { RecordedAction.fromJson(array.getJSONObject(it)) }
+        val normalized = insertRecordedWaits(existing + action)
+        val output = JSONArray().apply { normalized.forEach { put(it.toJson()) } }
+        prefs(context).edit().putString(KEY_ACTIONS, output.toString()).apply()
+    }
+
+    fun insertActionAt(context: Context, action: RecordedAction, index: Int) {
+        val current = actions(context).toMutableList()
+        current.add(index.coerceIn(0, current.size), action)
+        val output = JSONArray().apply { current.forEach { put(it.toJson()) } }
+        prefs(context).edit().putString(KEY_ACTIONS, output.toString()).apply()
     }
 
 
@@ -158,7 +173,7 @@ object WorkflowStore {
         }
         return JSONObject()
             .put("format", "automation-ui-workflow")
-            .put("schemaVersion", 2)
+            .put("schemaVersion", 3)
             .put("exportedAt", System.currentTimeMillis())
             .put("actions", exported)
             .toString(2)
@@ -181,14 +196,22 @@ object WorkflowStore {
         val incoming = (0 until array.length()).map { index ->
             RecordedAction.fromJson(array.getJSONObject(index))
         }
-        val supportedTypes = setOf("CLICK", "SET_TEXT", "SCROLL", "OPEN_SETTINGS", "HOME", "BACK", "GESTURE")
+        val supportedTypes = setOf("CLICK", "SET_TEXT", "SCROLL", "OPEN_SETTINGS", "HOME", "BACK", "GESTURE", "WAIT", "WAIT_FOR_UI")
         require(incoming.all { it.type in supportedTypes }) { "The file contains an unsupported action type." }
         require(incoming.all { it.type != "GESTURE" || isValidGesture(it) }) {
             "The file contains a gesture with missing or invalid coordinates."
         }
+        require(incoming.all {
+            when (it.type) {
+                "WAIT" -> it.waitDurationMs in 1L..30_000L
+                "WAIT_FOR_UI" -> !it.text.isNullOrBlank() && it.waitTimeoutMs in 1_000L..120_000L
+                else -> true
+            }
+        }) { "The file contains an invalid wait action." }
 
         val existing = actions(context)
-        val result = if (merge) mergeRecordedActions(existing, incoming) else incoming.sortedBy { it.timestamp }
+        val merged = if (merge) mergeRecordedActions(existing, incoming) else incoming.sortedBy { it.timestamp }
+        val result = insertRecordedWaits(merged)
         val output = JSONArray().apply { result.forEach { put(it.toJson()) } }
         prefs(context).edit().putString(KEY_ACTIONS, output.toString()).apply()
         return (result.size - existing.size).coerceAtLeast(0)
@@ -232,6 +255,46 @@ object WorkflowStore {
     }
 }
 
+internal fun insertRecordedWaits(
+    actions: List<RecordedAction>,
+    thresholdMs: Long = 1_200L,
+    maxWaitMs: Long = 30_000L
+): List<RecordedAction> {
+    val ordered = actions.withIndex()
+        .sortedWith(compareBy<IndexedValue<RecordedAction>> { it.value.timestamp }.thenBy { it.index })
+        .map { it.value }
+    val result = mutableListOf<RecordedAction>()
+    for (action in ordered) {
+        val previous = result.lastOrNull()
+        val isWaitAction = action.type == "WAIT" || action.type == "WAIT_FOR_UI"
+        val previousIsWait = previous?.type == "WAIT" || previous?.type == "WAIT_FOR_UI"
+        if (!isWaitAction && previous != null && !previousIsWait) {
+            val gap = action.timestamp - previous.timestamp
+            if (gap >= thresholdMs) {
+                result.add(
+                    RecordedAction(
+                        type = "WAIT",
+                        packageName = previous.packageName,
+                        text = "Recorded pause",
+                        viewId = null,
+                        contentDescription = null,
+                        className = null,
+                        left = 0, top = 0, right = 0, bottom = 0,
+                        screenWidth = action.screenWidth,
+                        screenHeight = action.screenHeight,
+                        scrollDeltaY = 0,
+                        timestamp = previous.timestamp,
+                        displayRotation = action.displayRotation,
+                        waitDurationMs = gap.coerceAtMost(maxWaitMs)
+                    )
+                )
+            }
+        }
+        result.add(action)
+    }
+    return result
+}
+
 internal fun isValidGesture(action: RecordedAction): Boolean {
     val kind = action.gestureKind?.uppercase() ?: return false
     if (kind !in setOf("TAP", "SWIPE", "LONG_PRESS")) return false
@@ -253,7 +316,8 @@ internal fun mergeRecordedActions(
             a.text == b.text && a.viewId == b.viewId && a.inputValue == b.inputValue &&
             a.gestureKind == b.gestureKind && a.gestureStartX == b.gestureStartX &&
             a.gestureStartY == b.gestureStartY && a.gestureEndX == b.gestureEndX &&
-            a.gestureEndY == b.gestureEndY
+            a.gestureEndY == b.gestureEndY &&
+            a.waitDurationMs == b.waitDurationMs && a.waitTimeoutMs == b.waitTimeoutMs
 
     fun gestureCenter(action: RecordedAction): Pair<Float, Float> =
         ((action.gestureStartX + action.gestureEndX) / 20_000f) to
