@@ -117,9 +117,25 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun safeLabel(source: AccessibilityNodeInfo?, event: AccessibilityEvent): String? {
-        if (source == null || source.isPassword || source.isEditable) return null
-        return (source.text?.toString() ?: source.contentDescription?.toString()
-            ?: event.text?.joinToString(" "))?.trim()?.take(180)?.takeIf { it.isNotBlank() }
+        var current = source
+        var ownsCurrent = false
+        repeat(4) {
+            val node = current ?: return@repeat
+            if (!node.isPassword && !node.isEditable) {
+                val label = (node.text?.toString() ?: node.contentDescription?.toString())
+                    ?.trim()?.take(180)?.takeIf { it.isNotBlank() }
+                if (label != null) {
+                    if (ownsCurrent) node.recycle()
+                    return label
+                }
+            }
+            val parent = node.parent
+            if (ownsCurrent) node.recycle()
+            current = parent
+            ownsCurrent = true
+        }
+        if (ownsCurrent) current?.recycle()
+        return event.text?.joinToString(" ")?.trim()?.take(180)?.takeIf { it.isNotBlank() }
     }
 
     private fun detectSystemNavigationAction(
@@ -300,7 +316,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                         waitForNextTarget(nextAction, 350L, 0L, done)
                                     }
                                 } else {
-                                    WorkflowStore.setStatus(this, "Skipped click: matched item is not clickable")
+                                    setReplayStatus("Skipped click: matched item is not clickable")
                                     done()
                                 }
                             }
@@ -563,7 +579,7 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     private fun dispatchTap(action: RecordedAction, done: () -> Unit) {
         val point = scaledCenter(action) ?: run {
-            WorkflowStore.setStatus(this, "Skipped click: no usable selector or coordinates")
+            setReplayStatus("Skipped click: no usable selector or coordinates")
             done()
             return
         }
