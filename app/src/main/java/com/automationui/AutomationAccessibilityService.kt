@@ -131,15 +131,17 @@ class AutomationAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 val source = event.source
                 val delta = resolveScrollDelta(event, source, packageName)
-                source?.recycle()
 
                 // Modern Android reports scrollDeltaY for a real scroll change.
                 // A zero delta often occurs while a screen is opening/re-layouting;
                 // replaying that as a forward swipe was causing phantom scrolls.
-                if (delta == 0) return
+                if (delta == 0) {
+                    source?.recycle()
+                    return
+                }
 
-                val action = buildAction("SCROLL", event, event.source, null, delta)
-                event.source?.recycle()
+                val action = buildAction("SCROLL", event, source, null, delta)
+                source?.recycle()
                 WorkflowStore.addAction(this, action)
                 WorkflowStore.setStatus(this, "Recorded SCROLL (ΔY $delta)")
             }
