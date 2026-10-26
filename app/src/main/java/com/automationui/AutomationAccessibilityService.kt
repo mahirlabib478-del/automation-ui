@@ -672,8 +672,18 @@ class AutomationAccessibilityService : AccessibilityService() {
         done: () -> Unit
     ) {
         if (!replaying) return
-        if (nextAction == null || nextAction.type in setOf("HOME", "BACK", "WAIT", "WAIT_FOR_UI")) {
-            handler.postDelayed({ if (replaying) done() }, minimumDelayMs)
+        if (nextAction == null) {
+            handler.postDelayed({
+                if (replaying) {
+                    setReplayStatus("VERIFY INFO: final action dispatched; no following UI target to verify")
+                    done()
+                }
+            }, minimumDelayMs)
+            return
+        }
+        if (nextAction.type in setOf("HOME", "BACK", "WAIT", "WAIT_FOR_UI")) {
+            val delay = if (nextAction.type == "WAIT" || nextAction.type == "WAIT_FOR_UI") 0L else minimumDelayMs
+            handler.postDelayed({ if (replaying) done() }, delay)
             return
         }
 
