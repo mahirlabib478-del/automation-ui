@@ -279,21 +279,55 @@ def capture_foreground_state(serial: Optional[str]) -> dict:
     }
 
 
+def _same_ui_identity(before: dict, after: dict) -> bool:
+    """Require the foreground app/activity to stay stable across a hierarchy dump."""
+    before_package = before.get("foregroundPackage")
+    after_package = after.get("foregroundPackage")
+    if before_package and after_package:
+        if before_package != after_package:
+            return False
+        before_activity = before.get("foregroundActivity")
+        after_activity = after.get("foregroundActivity")
+        if before_activity and after_activity and before_activity != after_activity:
+            return False
+        return True
+
+    before_window = before.get("focusedWindowPackage")
+    after_window = after.get("focusedWindowPackage")
+    if before_window and after_window:
+        return before_window == after_window
+    return False
+
+
 def capture_visible_ui_texts(serial: Optional[str]) -> dict:
-    """Capture UI hierarchy separately so a slow dump cannot stall foreground sampling."""
+    """Capture UI text and verify the foreground identity stayed stable during the dump."""
+    before = capture_foreground_state(serial)
     try:
         run_adb(serial, "shell", "uiautomator", "dump", "--compressed", "/sdcard/adb-automation-window.xml")
         xml_text = run_adb(serial, "shell", "cat", "/sdcard/adb-automation-window.xml")
         visible_texts = parse_visible_texts(xml_text)
+        after = capture_foreground_state(serial)
+        stable = _same_ui_identity(before, after)
+        captured_at = int(time.monotonic() * 1000)
         return {
             "visibleTexts": visible_texts,
-            "uiCapturedHostMonotonicMs": int(time.monotonic() * 1000),
-            "uiSnapshotReliable": bool(visible_texts),
+            "uiCapturedHostMonotonicMs": captured_at,
+            "uiForegroundPackage": before.get("foregroundPackage") if stable else None,
+            "uiForegroundActivity": before.get("foregroundActivity") if stable else None,
+            "uiFocusedWindowPackage": before.get("focusedWindowPackage") if stable else None,
+            "uiFocusedWindow": before.get("focusedWindow") if stable else None,
+            "uiIdentityStable": stable,
+            "uiSnapshotReliable": bool(visible_texts) and stable,
         }
     except (OSError, subprocess.SubprocessError, ValueError):
         return {
             "visibleTexts": [],
             "uiCapturedHostMonotonicMs": int(time.monotonic() * 1000),
+            "uiForegroundPackage": None,
+            "uiForegroundActivity": None,
+            "uiFocusedWindowPackage": None,
+            "uiFocusedWindow": None,
+            "uiIdentityStable": False,
             "uiSnapshotReliable": False,
         }
 
@@ -373,10 +407,40 @@ class ScreenStateObserver:
         state["uiSnapshotReliable"] = False
         if ui_state:
             ui_age = max(0, touch_host_monotonic_ms - int(ui_state["uiCapturedHostMonotonicMs"]))
-            state["visibleTexts"] = ui_state.get("visibleTexts", [])
             state["uiCapturedHostMonotonicMs"] = ui_state["uiCapturedHostMonotonicMs"]
             state["uiSampleAgeMs"] = ui_age
-            state["uiSnapshotReliable"] = bool(state["visibleTexts"]) and ui_age <= 2_500
+            state["uiForegroundPackage"] = ui_state.get("uiForegroundPackage")
+            state["uiForegroundActivity"] = ui_state.get("uiForegroundActivity")
+            state["uiFocusedWindowPackage"] = ui_state.get("uiFocusedWindowPackage")
+            state["uiFocusedWindow"] = ui_state.get("uiFocusedWindow")
+
+            state_package = state.get("foregroundPackage")
+            ui_package = ui_state.get("uiForegroundPackage")
+            state_window_package = state.get("focusedWindowPackage")
+            ui_window_package = ui_state.get("uiFocusedWindowPackage")
+            if state_package and ui_package:
+                identity_matches = state_package == ui_package
+            elif state_window_package and ui_window_package:
+                identity_matches = state_window_package == ui_window_package
+            else:
+                identity_matches = False
+
+            reliable = (
+                bool(ui_state.get("uiSnapshotReliable"))
+                and bool(ui_state.get("uiIdentityStable"))
+                and bool(ui_state.get("visibleTexts"))
+                and ui_age <= 2_500
+                and identity_matches
+            )
+            if reliable:
+                state["visibleTexts"] = ui_state.get("visibleTexts", [])
+                state["uiSnapshotReliable"] = True
+            else:
+                state["visibleTexts"] = []
+                state["uiSnapshotReliable"] = False
+                state["uiSnapshotDiscardReason"] = (
+                    "UI hierarchy snapshot was stale, unstable, or from a different foreground app/window"
+                )
         return state
 
 class GestureRecorder:

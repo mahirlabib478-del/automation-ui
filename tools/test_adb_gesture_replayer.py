@@ -57,10 +57,30 @@ class ADBGgestureReplayerTests(unittest.TestCase):
 
     def test_ui_only_snapshot_can_verify_visible_text(self):
         matched, _ = state_matches(
-            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"]},
-            {"visibleTexts": ["Continue", "Settings"]}
+            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"],
+             "uiForegroundPackage": "com.example"},
+            {"visibleTexts": ["Continue", "Settings"], "uiSnapshotReliable": True,
+             "uiForegroundPackage": "com.example"}
         )
         self.assertTrue(matched)
+
+    def test_ui_snapshot_from_different_app_does_not_match(self):
+        matched, reason = state_matches(
+            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"],
+             "uiForegroundPackage": "com.example"},
+            {"visibleTexts": ["Continue", "Settings"], "uiSnapshotReliable": True,
+             "uiForegroundPackage": "com.example.other"}
+        )
+        self.assertFalse(matched)
+        self.assertIn("different app", reason)
+
+    def test_unstable_current_ui_snapshot_is_not_used(self):
+        matched, reason = state_matches(
+            {"uiSnapshotReliable": True, "visibleTexts": ["Continue", "Settings"]},
+            {"visibleTexts": ["Continue", "Settings"], "uiSnapshotReliable": False}
+        )
+        self.assertFalse(matched)
+        self.assertIn("not reliable", reason)
 
     def test_ui_snapshot_fails_if_current_hierarchy_unavailable(self):
         matched, reason = state_matches(

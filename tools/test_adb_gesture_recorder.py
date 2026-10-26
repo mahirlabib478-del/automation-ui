@@ -152,6 +152,11 @@ add device 2: /dev/input/event2
         observer.ui_history = [{
             "visibleTexts": ["Continue", "Settings"],
             "uiCapturedHostMonotonicMs": 1200,
+            "uiForegroundPackage": "com.example",
+            "uiForegroundActivity": "com.example.Main",
+            "uiFocusedWindowPackage": "com.example",
+            "uiFocusedWindow": "com.example.Main",
+            "uiIdentityStable": True,
             "uiSnapshotReliable": True,
         }]
         snapshot = observer.snapshot_before(1500)
@@ -160,6 +165,33 @@ add device 2: /dev/input/event2
         self.assertTrue(snapshot["stateSnapshotReliable"])
         self.assertTrue(snapshot["uiSnapshotReliable"])
         self.assertEqual(snapshot["visibleTexts"], ["Continue", "Settings"])
+
+
+    def test_snapshot_before_discards_ui_text_from_different_app(self):
+        observer = ScreenStateObserver(None, capture_ui_hierarchy=True)
+        observer.history = [{
+            "foregroundPackage": "com.transsion.hilauncher",
+            "foregroundActivity": "com.android.launcher3.uioverrides.QuickstepLauncher",
+            "focusedWindowPackage": "com.transsion.hilauncher",
+            "focusedWindow": "com.android.launcher3.uioverrides.QuickstepLauncher",
+            "sampledAtHostMonotonicMs": 1000,
+        }]
+        observer.ui_history = [{
+            "visibleTexts": ["Nepal", "Secured connection", "Renew"],
+            "uiCapturedHostMonotonicMs": 1200,
+            "uiForegroundPackage": "com.example.vpn",
+            "uiForegroundActivity": "com.example.vpn.Main",
+            "uiFocusedWindowPackage": "com.example.vpn",
+            "uiFocusedWindow": "com.example.vpn.Main",
+            "uiIdentityStable": True,
+            "uiSnapshotReliable": True,
+        }]
+        snapshot = observer.snapshot_before(1500)
+        self.assertIsNotNone(snapshot)
+        self.assertTrue(snapshot["stateSnapshotReliable"])
+        self.assertFalse(snapshot["uiSnapshotReliable"])
+        self.assertEqual(snapshot["visibleTexts"], [])
+        self.assertIn("different foreground app/window", snapshot["uiSnapshotDiscardReason"])
 
     def test_snapshot_before_does_not_use_future_state(self):
         observer = ScreenStateObserver(None)
