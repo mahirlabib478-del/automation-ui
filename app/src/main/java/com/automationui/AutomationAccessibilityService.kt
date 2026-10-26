@@ -138,7 +138,7 @@ class AutomationAccessibilityService : AccessibilityService() {
     ): RecordedAction {
         val bounds = Rect()
         source?.getBoundsInScreen(bounds)
-        val sourceText = source?.text?.toString()?.takeIf { !source.isPassword && !source.isEditable }
+        val sourceText = source?.takeIf { !it.isPassword && !it.isEditable }?.text?.toString()
         val label = textOverride ?: sourceText
         return RecordedAction(
             type = type,
