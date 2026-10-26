@@ -74,7 +74,10 @@ object WorkflowStore {
             val lastIndex = array.length() - 1
             val last = runCatching { RecordedAction.fromJson(array.getJSONObject(lastIndex)) }.getOrNull()
             if (last != null && last.type == "SET_TEXT" && last.packageName == action.packageName &&
-                last.viewId == action.viewId && action.timestamp - last.timestamp in 0..1500) {
+                last.viewId == action.viewId &&
+                last.left == action.left && last.top == action.top &&
+                last.right == action.right && last.bottom == action.bottom &&
+                action.timestamp - last.timestamp in 0..1500) {
                 array.put(lastIndex, action.toJson())
                 prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
                 return
