@@ -66,6 +66,11 @@ class AutomationAccessibilityService : AccessibilityService() {
 
         if (!WorkflowStore.isRecording(this) || replaying) return
 
+        // The app's own Record/Stop/Replay controls are control-plane UI, not
+        // part of the user's workflow. Recording them makes replay start with
+        // a click on the dashboard instead of the actual task.
+        if (packageName == this.packageName) return
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 val source = event.source
@@ -207,38 +212,54 @@ class AutomationAccessibilityService : AccessibilityService() {
             WorkflowStore.setStatus(this, "Replay finished")
             return
         }
+
         val action = actions[index]
         val delay = if (index == 0) 0L else
             (action.timestamp - actions[index - 1].timestamp).coerceIn(250L, 3000L)
 
         handler.postDelayed({
             if (!replaying) return@postDelayed
-            executeAction(action, 0) {
+            executeAction(action, 0, actions.getOrNull(index + 1)) {
                 runActionAt(actions, index + 1)
             }
         }, delay)
     }
 
-    private fun executeAction(action: RecordedAction, attempt: Int, done: () -> Unit) {
+    private fun executeAction(
+        action: RecordedAction,
+        attempt: Int,
+        nextAction: RecordedAction?,
+        done: () -> Unit
+    ) {
         if (!replaying) return
+
         when (action.type) {
             "HOME" -> {
                 performGlobalAction(GLOBAL_ACTION_HOME)
-                handler.postDelayed(done, 500L)
+                waitForNextTarget(nextAction, 350L, 0L, done)
             }
+
             "BACK" -> {
                 performGlobalAction(GLOBAL_ACTION_BACK)
-                handler.postDelayed(done, 350L)
+                waitForNextTarget(nextAction, 350L, 0L, done)
             }
+
             "CLICK", "SET_TEXT", "SCROLL" -> {
                 val root = rootInActiveWindow
                 val rootPackage = root?.packageName?.toString()
+
                 if (root == null || (action.packageName != null && rootPackage != action.packageName)) {
                     root?.recycle()
                     if (attempt < 12) {
-                        handler.postDelayed({ executeAction(action, attempt + 1, done) }, 300L)
+                        handler.postDelayed(
+                            { executeAction(action, attempt + 1, nextAction, done) },
+                            250L
+                        )
                     } else {
-                        WorkflowStore.setStatus(this, "Skipped ${action.type}: expected app screen did not appear")
+                        WorkflowStore.setStatus(
+                            this,
+                            "Skipped ${action.type}: expected screen ${action.packageName ?: "(unknown)"} not active"
+                        )
                         done()
                     }
                     return
@@ -246,44 +267,164 @@ class AutomationAccessibilityService : AccessibilityService() {
 
                 val node = findNode(root, action)
                 root.recycle()
+
                 when (action.type) {
                     "CLICK" -> {
-                        val clicked = node?.let { clickNodeOrParent(it) } ?: false
-                        if (clicked) handler.postDelayed(done, 350L)
-                        else dispatchTap(action, done)
+                        if (node != null) {
+                            val clicked = clickNodeOrParent(node)
+                            if (clicked) {
+                                waitForNextTarget(nextAction, 350L, 0L, done)
+                            } else {
+                                // The matched node was not actionable. A coordinate
+                                // fallback is safer here than choosing another selector.
+                                if (hasValidBounds(action)) {
+                                    dispatchTap(action) {
+                                        waitForNextTarget(nextAction, 350L, 0L, done)
+                                    }
+                                } else {
+                                    WorkflowStore.setStatus(this, "Skipped click: matched item is not clickable")
+                                    done()
+                                }
+                            }
+                        } else if (!hasSemanticSelector(action) && hasValidBounds(action)) {
+                            dispatchTap(action) {
+                                waitForNextTarget(nextAction, 350L, 0L, done)
+                            }
+                        } else if (attempt < 10) {
+                            // Do not tap stale coordinates while a new Settings screen
+                            // is still loading. Wait for the recorded target to appear.
+                            handler.postDelayed(
+                                { executeAction(action, attempt + 1, nextAction, done) },
+                                250L
+                            )
+                        } else {
+                            WorkflowStore.setStatus(
+                                this,
+                                "Skipped click: recorded UI target not found (${action.text ?: action.viewId ?: action.contentDescription ?: "no label"})"
+                            )
+                            done()
+                        }
                     }
+
                     "SET_TEXT" -> {
                         if (node == null) {
-                            WorkflowStore.setStatus(this, "Skipped text input: field not found")
-                            done()
+                            if (attempt < 10) {
+                                handler.postDelayed(
+                                    { executeAction(action, attempt + 1, nextAction, done) },
+                                    250L
+                                )
+                            } else {
+                                WorkflowStore.setStatus(this, "Skipped text input: recorded field not found")
+                                done()
+                            }
                         } else {
                             val result = if (node.isPassword) false else {
                                 val args = Bundle().apply {
-                                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, action.text ?: "")
+                                    putCharSequence(
+                                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                                        action.text ?: ""
+                                    )
                                 }
                                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                             }
                             node.recycle()
-                            if (!result) WorkflowStore.setStatus(this, "Text input could not be replayed")
-                            handler.postDelayed(done, 350L)
+                            if (!result) {
+                                WorkflowStore.setStatus(this, "Text input could not be replayed")
+                            }
+                            waitForNextTarget(nextAction, 350L, 0L, done)
                         }
                     }
+
                     "SCROLL" -> {
-                        val direction = if (action.scrollDeltaY < 0) {
-                            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                        if (node == null && hasSemanticSelector(action) && attempt < 10) {
+                            handler.postDelayed(
+                                { executeAction(action, attempt + 1, nextAction, done) },
+                                250L
+                            )
                         } else {
-                            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                            val scrolled = if (node != null) {
+                                val direction = if (action.scrollDeltaY < 0) {
+                                    AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                                } else {
+                                    AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                                }
+                                val result = node.performAction(direction)
+                                node.recycle()
+                                result
+                            } else false
+
+                            if (scrolled) {
+                                waitForNextTarget(nextAction, 400L, 0L, done)
+                            } else if (hasValidBounds(action)) {
+                                dispatchSwipe(action, action.scrollDeltaY >= 0) {
+                                    waitForNextTarget(nextAction, 400L, 0L, done)
+                                }
+                            } else {
+                                WorkflowStore.setStatus(this, "Skipped scroll: no usable scroll target or bounds")
+                                done()
+                            }
                         }
-                        val scrolled = node?.performAction(direction) ?: false
-                        node?.recycle()
-                        if (scrolled) handler.postDelayed(done, 400L)
-                        else dispatchSwipe(action, action.scrollDeltaY >= 0, done)
                     }
                 }
             }
+
             else -> done()
         }
     }
+
+    /**
+     * Wait until the next recorded target is actually present. A fixed 350 ms
+     * pause often taps the old Settings screen before the new screen is ready.
+     */
+    private fun waitForNextTarget(
+        nextAction: RecordedAction?,
+        minimumDelayMs: Long,
+        elapsedMs: Long,
+        done: () -> Unit
+    ) {
+        if (!replaying) return
+        if (nextAction == null || nextAction.type == "HOME" || nextAction.type == "BACK") {
+            handler.postDelayed({ if (replaying) done() }, minimumDelayMs)
+            return
+        }
+
+        val pollDelay = 150L
+        handler.postDelayed({
+            if (!replaying) return@postDelayed
+
+            val root = rootInActiveWindow
+            val currentPackage = root?.packageName?.toString()
+            var ready = nextAction.packageName == null || currentPackage == nextAction.packageName
+
+            if (ready && hasSemanticSelector(nextAction) && root != null) {
+                val target = findNode(root, nextAction)
+                ready = target != null
+                target?.recycle()
+            }
+
+            root?.recycle()
+            val nextElapsed = elapsedMs + pollDelay
+            if (ready && nextElapsed >= minimumDelayMs) {
+                done()
+            } else if (nextElapsed >= 5000L) {
+                WorkflowStore.setStatus(this, "Next screen/target timed out; replay continuing")
+                done()
+            } else {
+                waitForNextTarget(nextAction, minimumDelayMs, nextElapsed, done)
+            }
+        }, pollDelay)
+    }
+
+    private fun hasSemanticSelector(action: RecordedAction): Boolean =
+        !action.viewId.isNullOrBlank() ||
+            !action.text.isNullOrBlank() ||
+            !action.contentDescription.isNullOrBlank()
+
+    private fun hasValidBounds(action: RecordedAction): Boolean =
+        action.right > action.left &&
+            action.bottom > action.top &&
+            action.screenWidth > 0 &&
+            action.screenHeight > 0
 
     private fun clickNodeOrParent(node: AccessibilityNodeInfo): Boolean {
         var current: AccessibilityNodeInfo? = node
@@ -302,54 +443,102 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun findNode(root: AccessibilityNodeInfo, action: RecordedAction): AccessibilityNodeInfo? {
-        val id = action.viewId
-        if (!id.isNullOrBlank()) {
-            val matches = runCatching { root.findAccessibilityNodeInfosByViewId(id) }.getOrNull().orEmpty()
-            val selected = matches.firstOrNull { it.isVisibleToUser }
-            if (selected != null) {
-                matches.filter { it !== selected }.forEach { it.recycle() }
-                return selected
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectNodes(root, candidates)
+
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = Int.MIN_VALUE
+        for (candidate in candidates) {
+            val score = scoreNode(candidate, action)
+            if (score > bestScore) {
+                best = candidate
+                bestScore = score
             }
-            matches.forEach { it.recycle() }
         }
 
-        val description = action.contentDescription
-        if (!description.isNullOrBlank()) {
-            val selected = findNodeByLabel(root, description)
-            if (selected != null) return selected
+        val minimumScore = if (hasSemanticSelector(action)) 8 else 1
+        if (best == null || bestScore < minimumScore) {
+            candidates.forEach { it.recycle() }
+            return null
         }
 
-        val text = action.text
-        if (!text.isNullOrBlank()) {
-            val matches = runCatching { root.findAccessibilityNodeInfosByText(text) }.getOrNull().orEmpty()
-            val selected = matches.firstOrNull { it.isVisibleToUser }
-            if (selected != null) {
-                matches.filter { it !== selected }.forEach { it.recycle() }
-                return selected
-            }
-            matches.forEach { it.recycle() }
-        }
-
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findNode(child, action)
-            child.recycle()
-            if (found != null) return found
-        }
-        return null
+        candidates.filter { it !== best }.forEach { it.recycle() }
+        return best
     }
 
-    private fun findNodeByLabel(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        if (root.contentDescription?.toString()?.equals(label, ignoreCase = true) == true) {
-            return AccessibilityNodeInfo.obtain(root)
-        }
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findNodeByLabel(child, label)
+    private fun collectNodes(
+        node: AccessibilityNodeInfo,
+        output: MutableList<AccessibilityNodeInfo>
+    ) {
+        output.add(AccessibilityNodeInfo.obtain(node))
+        for (index in 0 until node.childCount) {
+            val child = node.getChild(index) ?: continue
+            collectNodes(child, output)
             child.recycle()
-            if (found != null) return found
         }
-        return null
+    }
+
+    /**
+     * Common Android Settings rows reuse IDs such as "title". Rank all matching
+     * nodes instead of taking the first ID match; prefer the recorded label and
+     * use recorded bounds only as a disambiguator.
+     */
+    private fun scoreNode(node: AccessibilityNodeInfo, action: RecordedAction): Int {
+        if (!node.isVisibleToUser || !node.isEnabled) return Int.MIN_VALUE
+
+        var score = 0
+        val expectedId = action.viewId?.takeIf { it.isNotBlank() }
+        val actualId = node.viewIdResourceName
+        if (expectedId != null) {
+            score += if (actualId == expectedId) 14 else -4
+        }
+
+        val expectedText = action.text?.trim()?.takeIf { it.isNotBlank() }
+        val actualText = node.text?.toString()?.trim().orEmpty()
+        val actualDescription = node.contentDescription?.toString()?.trim().orEmpty()
+
+        if (expectedText != null) {
+            when {
+                actualText.equals(expectedText, ignoreCase = true) -> score += 24
+                actualDescription.equals(expectedText, ignoreCase = true) -> score += 18
+                actualText.contains(expectedText, ignoreCase = true) ||
+                    expectedText.contains(actualText, ignoreCase = true) && actualText.isNotBlank() -> score += 12
+                actualText.isNotBlank() || actualDescription.isNotBlank() -> score -= 24
+                else -> score -= 8
+            }
+        }
+
+        val expectedDescription = action.contentDescription?.trim()?.takeIf { it.isNotBlank() }
+        if (expectedDescription != null) {
+            when {
+                actualDescription.equals(expectedDescription, ignoreCase = true) -> score += 24
+                actualText.equals(expectedDescription, ignoreCase = true) -> score += 18
+                actualDescription.isNotBlank() || actualText.isNotBlank() -> score -= 24
+                else -> score -= 8
+            }
+        }
+
+        val expectedClass = action.className?.takeIf { it.isNotBlank() }
+        if (expectedClass != null && node.className?.toString() == expectedClass) score += 2
+        if (node.isClickable) score += 3
+        if (action.type == "SCROLL" && node.isScrollable) score += 10
+
+        if (hasValidBounds(action)) {
+            val recordedX = ((action.left + action.right) / 2f) / action.screenWidth.toFloat()
+            val recordedY = ((action.top + action.bottom) / 2f) / action.screenHeight.toFloat()
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            val currentWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+            val currentHeight = resources.displayMetrics.heightPixels.coerceAtLeast(1)
+            val currentX = bounds.exactCenterX() / currentWidth.toFloat()
+            val currentY = bounds.exactCenterY() / currentHeight.toFloat()
+            val dx = recordedX - currentX
+            val dy = recordedY - currentY
+            val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+            score += (12f - distance * 24f).toInt().coerceIn(-12, 12)
+        }
+
+        return score
     }
 
     private fun dispatchTap(action: RecordedAction, done: () -> Unit) {
