@@ -3,6 +3,7 @@ package com.automationui
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.sign
 
 data class RecordedAction(
     val type: String,
@@ -80,6 +81,31 @@ object WorkflowStore {
                 last.right == action.right && last.bottom == action.bottom &&
                 action.timestamp - last.timestamp in 0..1500) {
                 array.put(lastIndex, action.toJson())
+                prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
+                return
+            }
+        }
+
+        // A single finger swipe can emit several TYPE_VIEW_SCROLLED events.
+        // Coalesce near-identical events from the same scroll container so replay
+        // performs one scroll rather than repeating the same movement several times.
+        if (action.type == "SCROLL" && array.length() > 0) {
+            val lastIndex = array.length() - 1
+            val last = runCatching { RecordedAction.fromJson(array.getJSONObject(lastIndex)) }.getOrNull()
+            val sameDirection = last != null &&
+                (last.scrollDeltaY == 0 || action.scrollDeltaY == 0 ||
+                    last.scrollDeltaY.sign == action.scrollDeltaY.sign)
+            if (last != null && last.type == "SCROLL" &&
+                last.packageName == action.packageName &&
+                last.viewId == action.viewId &&
+                last.className == action.className &&
+                last.left == action.left && last.top == action.top &&
+                last.right == action.right && last.bottom == action.bottom &&
+                sameDirection && action.timestamp - last.timestamp in 0..350) {
+                val merged = if (action.scrollDeltaY == 0 && last.scrollDeltaY != 0) {
+                    action.copy(scrollDeltaY = last.scrollDeltaY)
+                } else action
+                array.put(lastIndex, merged.toJson())
                 prefs(context).edit().putString(KEY_ACTIONS, array.toString()).apply()
                 return
             }
