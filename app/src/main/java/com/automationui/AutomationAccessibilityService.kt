@@ -170,7 +170,9 @@ class AutomationAccessibilityService : AccessibilityService() {
         packageName: String?
     ): Int {
         val now = System.currentTimeMillis()
-        val key = "${packageName.orEmpty()}|${source?.viewIdResourceName.orEmpty()}|${source?.className?.toString().orEmpty()}"
+        val sourceBounds = Rect()
+        source?.getBoundsInScreen(sourceBounds)
+        val key = "${packageName.orEmpty()}|${source?.viewIdResourceName.orEmpty()}|${source?.className?.toString().orEmpty()}|${sourceBounds.left},${sourceBounds.top},${sourceBounds.right},${sourceBounds.bottom}"
         val previous = lastScrollPositions[key]
         val current = ScrollSnapshot(event.scrollY, event.fromIndex, event.toIndex, now)
         lastScrollPositions[key] = current
@@ -480,7 +482,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                             } else {
                                 // The matched node was not actionable. A coordinate
                                 // fallback is safer here than choosing another selector.
-                                if (hasValidBounds(action)) {
+                                if (coordinateFallbackAllowed(action)) {
                                     setReplayStatus("CLICK used coordinate fallback")
                                     dispatchTap(action) {
                                         waitForNextTarget(nextAction, 350L, 0L, done)
@@ -490,7 +492,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                                     done()
                                 }
                             }
-                        } else if (!hasSemanticSelector(action) && hasValidBounds(action)) {
+                        } else if (!hasSemanticSelector(action) && coordinateFallbackAllowed(action)) {
                             setReplayStatus("CLICK used coordinate fallback")
                             dispatchTap(action) {
                                 waitForNextTarget(nextAction, 350L, 0L, done)
@@ -667,11 +669,12 @@ class AutomationAccessibilityService : AccessibilityService() {
     private fun findNode(root: AccessibilityNodeInfo, action: RecordedAction): AccessibilityNodeInfo? {
         val candidates = mutableListOf<AccessibilityNodeInfo>()
         collectNodes(root, candidates)
+        val display = realDisplaySize()
 
         var best: AccessibilityNodeInfo? = null
         var bestScore = Int.MIN_VALUE
         for (candidate in candidates) {
-            val score = scoreNode(candidate, action)
+            val score = scoreNode(candidate, action, display)
             if (score > bestScore) {
                 best = candidate
                 bestScore = score
@@ -705,8 +708,11 @@ class AutomationAccessibilityService : AccessibilityService() {
      * nodes instead of taking the first ID match; prefer the recorded label and
      * use recorded bounds only as a disambiguator.
      */
-    private fun scoreNode(node: AccessibilityNodeInfo, action: RecordedAction): Int {
-        val display = realDisplaySize()
+    private fun scoreNode(
+        node: AccessibilityNodeInfo,
+        action: RecordedAction,
+        display: Pair<Int, Int>
+    ): Int {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
         val snapshot = NodeSnapshot(

@@ -52,7 +52,9 @@ data class RecordedAction(
             right = obj.optInt("right"), bottom = obj.optInt("bottom"),
             screenWidth = obj.optInt("screenWidth"), screenHeight = obj.optInt("screenHeight"),
             scrollDeltaY = obj.optInt("scrollDeltaY"), timestamp = obj.optLong("timestamp"),
-            inputValue = obj.optString("inputValue").takeUnless { it == "null" },
+            inputValue = if (obj.has("inputValue") && !obj.isNull("inputValue")) {
+                obj.optString("inputValue")
+            } else null,
             hintText = obj.optString("hintText").takeUnless { it == "null" || it.isBlank() },
             displayRotation = obj.optInt("displayRotation", 0),
             schemaVersion = obj.optInt("schemaVersion", 1)
