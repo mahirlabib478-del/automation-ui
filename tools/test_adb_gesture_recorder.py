@@ -101,5 +101,41 @@ add device 2: /dev/input/event2
         self.assertNotEqual(recorder.actions[0]["gestureStartY"], recorder.actions[0]["gestureEndY"])
 
 
+    def test_records_gap_before_each_gesture(self):
+        recorder = GestureRecorder(self.device, 101, 101, 0, 1_700_000_000_000)
+        lines = [
+            "[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID 00000001",
+            "[ 1.010000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000032",
+            "[ 1.020000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000032",
+            "[ 1.100000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID ffffffff",
+            "[ 6.100000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID 00000002",
+            "[ 6.110000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000040",
+            "[ 6.120000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000040",
+            "[ 6.200000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID ffffffff",
+        ]
+        for line in lines:
+            recorder.feed(line)
+        self.assertEqual(len(recorder.actions), 2)
+        self.assertEqual(recorder.actions[0]["gapBeforeMs"], 0)
+        self.assertEqual(recorder.actions[1]["gapBeforeMs"], 5_000)
+        self.assertLess(recorder.actions[1]["startTimestamp"], recorder.actions[1]["timestamp"])
+
+    def test_attaches_pre_touch_state_snapshot(self):
+        recorder = GestureRecorder(self.device, 101, 101, 0, 1_700_000_000_000)
+        recorder.state_provider = lambda uptime: {
+            "foregroundPackage": "com.example",
+            "deviceUptimeMs": uptime - 100,
+            "stateSnapshotReliable": True,
+        }
+        lines = [
+            "[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID 00000001",
+            "[ 1.010000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000032",
+            "[ 1.020000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000032",
+            "[ 1.100000] /dev/input/event2: EV_ABS ABS_MT_TRACKING_ID ffffffff",
+        ]
+        for line in lines:
+            recorder.feed(line)
+        self.assertEqual(recorder.actions[0]["screenStateBefore"]["foregroundPackage"], "com.example")
+
 if __name__ == "__main__":
     unittest.main()

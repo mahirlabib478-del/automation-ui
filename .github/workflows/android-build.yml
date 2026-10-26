@@ -48,32 +48,39 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/app-debug.apk
           cp tools/adb_gesture_recorder.py dist/adb_gesture_recorder.py
+          cp tools/adb_gesture_replayer.py dist/adb_gesture_replayer.py
           cat > dist/QUICKSTART.txt <<'EOF'
-          AUTOMATION UI - HYBRID RECORD & REPLAY QUICKSTART
+          AUTOMATION UI - ADB RECORD & REPLAY QUICKSTART
 
           1. Install app-debug.apk on the Android phone.
           2. Open Automation UI and enable its Accessibility Service.
           3. Enable Developer options and USB debugging on the phone. Connect by USB and accept the RSA authorization prompt.
           4. On the computer, install Android Platform Tools and Python 3. Run: adb devices
-          5. In Automation UI, tap Record.
+          5. Keep Automation UI closed during ADB-only recording/replay; the companion records raw touchscreen gestures independently.
           6. In a computer terminal in this folder, run:
-             python adb_gesture_recorder.py --output adb-gestures.json
-          7. Use the phone normally. The script captures accessible raw touchscreen taps, swipes, and long presses when the device allows shell access.
+             python adb_gesture_recorder.py --output adb-gestures.json --capture-ui-hierarchy
+          7. Use the phone normally. Each gesture records its start/end, duration, exact gap before the next gesture, and best-effort pre-touch foreground/window/UI text state. UI hierarchy capture may be slower or unavailable on some devices.
           8. Press Ctrl+C in the computer terminal to stop ADB capture.
-          9. Return to the launcher and reopen Automation UI to stop app recording, then choose Import / merge JSON and select adb-gestures.json.
-          10. Review the action list before tapping Replay.
+          9. Preview the workflow without touching the phone:
+             python adb_gesture_replayer.py --input adb-gestures.json --dry-run
+          10. To replay using ADB only:
+              python adb_gesture_replayer.py --input adb-gestures.json
+          11. Review adb-replay-log.jsonl if replay stops because the recorded screen state does not match.
 
           NOTES
           - Keep the same display orientation during recording and replay.
           - If getevent access is denied, use Accessibility-only recording; do not treat an empty JSON file as a successful capture.
           - Password fields are excluded from text recording. Multi-touch is intentionally not approximated.
           - This is a debug build. Automated tests passed, but each target app/workflow still requires real-device verification.
+          - ADB shell input supports common taps/swipes/long-presses, not every protected system gesture, secure screen, or multi-touch interaction.
+          - Review JSON and state snapshots before replay. Do not record passwords, payment screens, or private information.
           EOF
           test -s dist/app-debug.apk
           test -s dist/adb_gesture_recorder.py
+          test -s dist/adb_gesture_replayer.py
           test -s dist/QUICKSTART.txt
 
-      - name: Upload APK and ADB gesture helper
+      - name: Upload APK and ADB gesture helpers
         uses: actions/upload-artifact@v4
         with:
           name: automation-ui-hybrid-gesture-kit
