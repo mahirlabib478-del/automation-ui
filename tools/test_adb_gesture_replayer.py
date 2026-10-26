@@ -205,6 +205,18 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete normalized coordinates"):
             action_coordinates(action, 720, 1600, 720, 1600)
 
+    def test_closed_swipe_is_rejected_instead_of_becoming_a_long_press(self):
+        action = {"type": "GESTURE", "gestureKind": "SWIPE",
+                  "gestureStartX": 5000, "gestureStartY": 5000,
+                  "gestureEndX": 5000, "gestureEndY": 5000,
+                  "gesturePoints": [
+                      {"x": 5000, "y": 5000},
+                      {"x": 7000, "y": 6000},
+                      {"x": 5000, "y": 5000},
+                  ]}
+        with self.assertRaisesRegex(ValueError, "resolve to the same pixel"):
+            action_coordinates(action, 720, 1600, 720, 1600)
+
     def test_rotation_change_transforms_coordinates(self):
         action = {"type": "GESTURE", "gestureKind": "SWIPE",
                   "gestureStartX": 0, "gestureStartY": 0,
