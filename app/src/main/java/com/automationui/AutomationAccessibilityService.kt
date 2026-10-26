@@ -411,8 +411,26 @@ class AutomationAccessibilityService : AccessibilityService() {
                                 { executeAction(action, attempt + 1, nextAction, done) },
                                 250L
                             )
+                        } else if (hasValidBounds(action)) {
+                            // Some apps (including YouTube on certain versions) emit a
+                            // useful click label in the event but do not expose that label
+                            // on a searchable AccessibilityNodeInfo. After waiting for the
+                            // selector, use the recorded hit area as a last resort, but only
+                            // while the same target app package is still foreground.
+                            val currentRoot = rootInActiveWindow
+                            val currentPackage = currentRoot?.packageName?.toString()
+                            currentRoot?.recycle()
+                            if (currentPackage == action.packageName) {
+                                setReplayStatus("Selector not found; using recorded coordinates")
+                                dispatchTap(action) {
+                                    waitForNextTarget(nextAction, 350L, 0L, done)
+                                }
+                            } else {
+                                setReplayStatus("Skipped click: target app is no longer active")
+                                done()
+                            }
                         } else {
-                            setReplayStatus("Skipped click: recorded UI target not found")
+                            setReplayStatus("Skipped click: target not found and no valid coordinates")
                             done()
                         }
                     }
