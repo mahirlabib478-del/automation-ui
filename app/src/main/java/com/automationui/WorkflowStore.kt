@@ -3,7 +3,6 @@ package com.automationui
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.sign
 
 data class RecordedAction(
     val type: String,
@@ -94,7 +93,8 @@ object WorkflowStore {
             val last = runCatching { RecordedAction.fromJson(array.getJSONObject(lastIndex)) }.getOrNull()
             val sameDirection = last != null &&
                 (last.scrollDeltaY == 0 || action.scrollDeltaY == 0 ||
-                    last.scrollDeltaY.sign == action.scrollDeltaY.sign)
+                    (last.scrollDeltaY > 0 && action.scrollDeltaY > 0) ||
+                    (last.scrollDeltaY < 0 && action.scrollDeltaY < 0))
             if (last != null && last.type == "SCROLL" &&
                 last.packageName == action.packageName &&
                 last.viewId == action.viewId &&
