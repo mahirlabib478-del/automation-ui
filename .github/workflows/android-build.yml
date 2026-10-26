@@ -34,6 +34,9 @@ jobs:
       - name: Check Gradle
         run: gradle --version
 
+      - name: Run Python ADB gesture recorder tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+
       - name: Run unit tests
         run: gradle --no-daemon --stacktrace testDebugUnitTest
 

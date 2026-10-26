@@ -12,9 +12,19 @@ An Android Accessibility-based Record & Replay prototype. It records actions exp
 
 ## Build and tests
 
-Run `gradle --no-daemon testDebugUnitTest` and `gradle --no-daemon assembleDebug`.
+Run `python3 -m unittest discover -s tools -p 'test_*.py' -v`, `gradle --no-daemon testDebugUnitTest`, and `gradle --no-daemon assembleDebug`.
 
-GitHub Actions runs unit tests before building the debug APK.
+GitHub Actions runs Python parser tests and Android unit tests before building the debug APK.
+
+## Hybrid gesture recording over ADB
+
+The Android Accessibility Service records semantic clicks, optional non-password text changes, and accessible scroll events. For raw touchscreen fallback, run the companion on a computer with Python 3 and Android Platform Tools:
+
+    python tools/adb_gesture_recorder.py --output adb-gestures.json
+
+Start Record in the app first, run the companion, use the phone, then press Ctrl+C in the computer terminal. Stop app recording after the companion has stopped so the return-to-app tap is not captured. In Automation UI, choose Import / merge JSON and select adb-gestures.json. Matching taps/scrolls already captured semantically are deduplicated; uncovered gestures are added to the workflow. Keep the phone in the same orientation during recording and replay.
+
+The companion discovers touchscreen axes with adb shell getevent -lp. Some production/OEM builds deny shell access to touch input; in that case it reports an error and Accessibility-only recording remains available. Multi-touch gestures are intentionally ignored rather than approximated as a single finger.
 
 ## ADB device smoke test
 
