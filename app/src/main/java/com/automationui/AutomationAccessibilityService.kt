@@ -56,7 +56,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (WorkflowStore.isRecording(this) && !replaying &&
                 packageName != null && isLauncher(packageName) &&
-                lastForegroundPackage != null && !isLauncher(lastForegroundPackage!!)
+                (lastForegroundPackage == null || !isLauncher(lastForegroundPackage!!))
             ) {
                 WorkflowStore.addAction(this, emptyAction("HOME", null, System.currentTimeMillis()))
                 WorkflowStore.setStatus(this, "Recorded HOME")
@@ -396,10 +396,14 @@ class AutomationAccessibilityService : AccessibilityService() {
             val currentPackage = root?.packageName?.toString()
             var ready = nextAction.packageName == null || currentPackage == nextAction.packageName
 
-            if (ready && hasSemanticSelector(nextAction) && root != null) {
-                val target = findNode(root, nextAction)
-                ready = target != null
-                target?.recycle()
+            if (ready && hasSemanticSelector(nextAction)) {
+                if (root == null) {
+                    ready = false
+                } else {
+                    val target = findNode(root, nextAction)
+                    ready = target != null
+                    target?.recycle()
+                }
             }
 
             root?.recycle()
@@ -551,7 +555,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 90))
             .build()
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 handler.postDelayed(done, 350L)
             }
@@ -560,27 +564,52 @@ class AutomationAccessibilityService : AccessibilityService() {
                 done()
             }
         }, handler)
+        if (!accepted) {
+            WorkflowStore.setStatus(this, "Tap gesture was rejected by Android")
+            done()
+        }
     }
 
     private fun dispatchSwipe(action: RecordedAction, forward: Boolean, done: () -> Unit) {
-        val displayWidth = resources.displayMetrics.widthPixels
-        val displayHeight = resources.displayMetrics.heightPixels
-        val left = scale(action.left, action.screenWidth, displayWidth)
-        val right = scale(action.right, action.screenWidth, displayWidth)
-        val top = scale(action.top, action.screenHeight, displayHeight)
-        val bottom = scale(action.bottom, action.screenHeight, displayHeight)
-        val safeLeft = left.coerceIn(0, displayWidth - 1)
-        val safeRight = right.coerceIn(safeLeft + 1, displayWidth)
-        val safeTop = top.coerceIn(0, displayHeight - 1)
-        val safeBottom = bottom.coerceIn(safeTop + 1, displayHeight)
-        val x = (safeLeft + safeRight) / 2f
-        val yStart = if (forward) safeBottom - (safeBottom - safeTop) * 0.15f else safeTop + (safeBottom - safeTop) * 0.15f
-        val yEnd = if (forward) safeTop + (safeBottom - safeTop) * 0.15f else safeBottom - (safeBottom - safeTop) * 0.15f
+        val displayWidth = resources.displayMetrics.widthPixels.coerceAtLeast(2)
+        val displayHeight = resources.displayMetrics.heightPixels.coerceAtLeast(2)
+
+        val x: Float
+        val yStart: Float
+        val yEnd: Float
+        if (hasValidBounds(action)) {
+            val left = scale(action.left, action.screenWidth, displayWidth)
+            val right = scale(action.right, action.screenWidth, displayWidth)
+            val top = scale(action.top, action.screenHeight, displayHeight)
+            val bottom = scale(action.bottom, action.screenHeight, displayHeight)
+            val safeLeft = left.coerceIn(0, displayWidth - 1)
+            val safeRight = right.coerceIn(safeLeft + 1, displayWidth)
+            val safeTop = top.coerceIn(0, displayHeight - 1)
+            val safeBottom = bottom.coerceIn(safeTop + 1, displayHeight)
+            x = (safeLeft + safeRight) / 2f
+            yStart = if (forward) {
+                safeBottom - (safeBottom - safeTop) * 0.15f
+            } else {
+                safeTop + (safeBottom - safeTop) * 0.15f
+            }
+            yEnd = if (forward) {
+                safeTop + (safeBottom - safeTop) * 0.15f
+            } else {
+                safeBottom - (safeBottom - safeTop) * 0.15f
+            }
+        } else {
+            // Some scroll events have no source bounds. Use a broad central swipe
+            // instead of accidentally generating a 1-pixel gesture at (0, 0).
+            x = displayWidth / 2f
+            yStart = if (forward) displayHeight * 0.82f else displayHeight * 0.18f
+            yEnd = if (forward) displayHeight * 0.18f else displayHeight * 0.82f
+        }
+
         val path = Path().apply { moveTo(x, yStart); lineTo(x, yEnd) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 350))
             .build()
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 handler.postDelayed(done, 400L)
             }
@@ -589,6 +618,10 @@ class AutomationAccessibilityService : AccessibilityService() {
                 done()
             }
         }, handler)
+        if (!accepted) {
+            WorkflowStore.setStatus(this, "Swipe gesture was rejected by Android")
+            done()
+        }
     }
 
     private fun scaledCenter(action: RecordedAction): Pair<Float, Float>? {
