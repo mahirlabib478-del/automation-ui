@@ -131,10 +131,17 @@ class AutomationAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 val source = event.source
                 val delta = resolveScrollDelta(event, source, packageName)
-                val action = buildAction("SCROLL", event, source, null, delta)
                 source?.recycle()
+
+                // Modern Android reports scrollDeltaY for a real scroll change.
+                // A zero delta often occurs while a screen is opening/re-layouting;
+                // replaying that as a forward swipe was causing phantom scrolls.
+                if (delta == 0) return
+
+                val action = buildAction("SCROLL", event, event.source, null, delta)
+                event.source?.recycle()
                 WorkflowStore.addAction(this, action)
-                WorkflowStore.setStatus(this, "Recorded SCROLL")
+                WorkflowStore.setStatus(this, "Recorded SCROLL (ΔY $delta)")
             }
         }
     }
@@ -144,7 +151,9 @@ class AutomationAccessibilityService : AccessibilityService() {
         source: AccessibilityNodeInfo?,
         packageName: String?
     ): Int {
-        if (Build.VERSION.SDK_INT >= 28 && event.scrollDeltaY != 0) {
+        // On API 28+, use Android's explicit delta. Do not infer a scroll from
+        // scrollY changes because list relayouts can change scrollY without a finger swipe.
+        if (Build.VERSION.SDK_INT >= 28) {
             return event.scrollDeltaY
         }
 
@@ -596,13 +605,20 @@ class AutomationAccessibilityService : AccessibilityService() {
         var score = 0
         val expectedId = action.viewId?.takeIf { it.isNotBlank() }
         val actualId = node.viewIdResourceName
+        val expectedText = action.text?.trim()?.takeIf { it.isNotBlank() }
+        val expectedDescription = action.contentDescription?.trim()?.takeIf { it.isNotBlank() }
+        val actualText = node.text?.toString()?.trim().orEmpty()
+        val actualDescription = node.contentDescription?.toString()?.trim().orEmpty()
+
+        // If the recording only has an ID (no label), a different ID is not a
+        // valid candidate. Coordinate proximity alone must not trigger a wrong tap.
+        if (expectedId != null && expectedText == null && expectedDescription == null &&
+            actualId != expectedId
+        ) return Int.MIN_VALUE
+
         if (expectedId != null) {
             score += if (actualId == expectedId) 14 else -4
         }
-
-        val expectedText = action.text?.trim()?.takeIf { it.isNotBlank() }
-        val actualText = node.text?.toString()?.trim().orEmpty()
-        val actualDescription = node.contentDescription?.toString()?.trim().orEmpty()
 
         if (expectedText != null) {
             when {
@@ -615,7 +631,6 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
         }
 
-        val expectedDescription = action.contentDescription?.trim()?.takeIf { it.isNotBlank() }
         if (expectedDescription != null) {
             when {
                 actualDescription.equals(expectedDescription, ignoreCase = true) -> score += 24
