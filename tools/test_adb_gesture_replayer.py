@@ -303,6 +303,32 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         self.assertTrue(matched)
 
 
+
+    def test_main_waits_out_remaining_tap_duration(self):
+        payload = {
+            "format": "adb-gesture-capture",
+            "screen": {"width": 360, "height": 800, "rotation": 0},
+            "actions": [{
+                "type": "GESTURE", "gestureKind": "TAP",
+                "gestureStartX": 5000, "gestureStartY": 5000,
+                "gestureEndX": 5000, "gestureEndY": 5000,
+                "gestureDurationMs": 120, "gapBeforeMs": 0,
+                "screenWidth": 360, "screenHeight": 800,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "workflow.json"
+            log_path = Path(directory) / "replay.jsonl"
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch("adb_gesture_replayer.run_adb", return_value="device"), \
+                 patch("adb_gesture_replayer.get_display", return_value=(360, 800, 0)), \
+                 patch("adb_gesture_replayer.dispatch_action", return_value="shell input tap 180 400"), \
+                 patch("adb_gesture_replayer.time.monotonic", side_effect=[10.0, 10.035]), \
+                 patch("adb_gesture_replayer.time.sleep") as sleep_mock:
+                result = main(["--input", str(input_path), "--log", str(log_path)])
+        self.assertEqual(result, 0)
+        sleep_mock.assert_called_once_with(0.085)
+
     def test_tap_duration_remainder_preserves_missing_time(self):
         from adb_gesture_replayer import tap_duration_remainder_ms
         action = {"gestureKind": "TAP", "gestureDurationMs": 120}
