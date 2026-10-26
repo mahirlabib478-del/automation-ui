@@ -407,7 +407,10 @@ class AutomationAccessibilityService : AccessibilityService() {
         replayActionIndex = index + 1
         setReplayStatus("Running ${action.type}")
         val previousAction = actions.getOrNull(index - 1)
-        val delay = if (action.type == "WAIT" || previousAction?.type == "WAIT") {
+        val delay = if (
+            action.type in setOf("WAIT", "WAIT_FOR_UI") ||
+            previousAction?.type in setOf("WAIT", "WAIT_FOR_UI")
+        ) {
             0L
         } else {
             ReplayPolicy.delayMs(previousAction?.timestamp, action.timestamp)

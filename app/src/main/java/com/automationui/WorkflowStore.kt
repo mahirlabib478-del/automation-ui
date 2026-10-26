@@ -161,7 +161,9 @@ object WorkflowStore {
 
     fun insertActionAt(context: Context, action: RecordedAction, index: Int) {
         val current = actions(context).toMutableList()
-        current.add(index.coerceIn(0, current.size), action)
+        val insertionIndex = index.coerceIn(0, current.size)
+        val inserted = current.getOrNull(insertionIndex)?.let { action.copy(timestamp = it.timestamp) } ?: action
+        current.add(insertionIndex, inserted)
         val output = JSONArray().apply { current.forEach { put(it.toJson()) } }
         prefs(context).edit().putString(KEY_ACTIONS, output.toString()).apply()
     }
