@@ -16,15 +16,15 @@ Run `python3 -m unittest discover -s tools -p 'test_*.py' -v`, `gradle --no-daem
 
 GitHub Actions runs Python parser tests and Android unit tests before building the debug APK.
 
-## Hybrid gesture recording over ADB
+## Hybrid gesture recording over ADB (optional import workflow)
 
-The Android Accessibility Service records semantic clicks, optional non-password text changes, and accessible scroll events. For raw touchscreen fallback, run the companion on a computer with Python 3 and Android Platform Tools:
+For users who want to import raw ADB gestures into the Android app's older hybrid workflow, run the recorder with Python 3 and Android Platform Tools:
 
     python tools/adb_gesture_recorder.py --output adb-gestures.json
 
-Start Record in the app first, run the companion, use the phone, then press Ctrl+C in the computer terminal. Stop app recording after the companion has stopped so the return-to-app tap is not captured. In Automation UI, choose Import / merge JSON and select adb-gestures.json. Matching taps/scrolls already captured semantically are deduplicated; uncovered gestures are added to the workflow. Keep the phone in the same orientation during recording and replay.
+Start Record in Automation UI first, run the companion, use the phone, then press Ctrl+C in the computer terminal. Stop app recording and import/merge adb-gestures.json. This hybrid import path is optional; the ADB-only workflow below does not require the Automation UI app to be open.
 
-The companion discovers touchscreen axes with adb shell getevent -lp. Some production/OEM builds deny shell access to touch input; in that case it reports an error and Accessibility-only recording remains available. Multi-touch gestures are intentionally ignored rather than approximated as a single finger.
+The companion discovers touchscreen axes with adb shell getevent -lp. Some production/OEM builds deny shell access to touch input; in that case it reports an error. Multi-touch gestures are intentionally ignored rather than approximated as a single finger.
 
 ## ADB device smoke test
 
