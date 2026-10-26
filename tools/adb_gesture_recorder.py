@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -25,7 +26,7 @@ from typing import Optional
 DEVICE_HEADER = re.compile(r"^add device \d+:\s*(/dev/input/\S+)", re.MULTILINE)
 EVENT_LINE = re.compile(
     r"^\[\s*(?P<time>\d+(?:\.\d+)?)\]\s+"
-    r"(?P<device>/dev/input/\S+):\s+"
+    r"(?:(?P<device>/dev/input/\S+):\s+)?"
     r"(?P<event>\S+)\s+(?P<code>\S+)\s+(?P<value>[0-9a-fA-F-]+)"
 )
 
@@ -108,7 +109,7 @@ def parse_event_line(line: str):
         return None
     return (
         float(match.group("time")),
-        match.group("device"),
+        match.group("device") or None,
         match.group("event"),
         match.group("code"),
         parse_value(match.group("value")),
@@ -143,8 +144,25 @@ def parse_rotation(output: str) -> Optional[int]:
     return None
 
 
+def resolve_adb_executable() -> str:
+    """Find adb even when it is installed outside Windows PATH."""
+    found = shutil.which("adb")
+    if found:
+        return found
+    candidates = [
+        Path(__file__).resolve().parent / "adb.exe",
+        Path(__file__).resolve().parent / "platform-tools" / "adb.exe",
+        Path(r"C:\platform-tools\adb.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    # Preserve the usual error message if adb is not installed or discoverable.
+    return "adb"
+
+
 def adb_command(serial: Optional[str], *args: str) -> list[str]:
-    command = ["adb"]
+    command = [resolve_adb_executable()]
     if serial:
         command += ["-s", serial]
     command += list(args)
@@ -305,7 +323,9 @@ class GestureRecorder:
         if parsed is None:
             return
         timestamp, path, event_type, code, value = parsed
-        if path != self.device.path:
+        # getevent omits the device prefix when a single event node is specified.
+        # If a prefix is present, still reject events from other input devices.
+        if path is not None and path != self.device.path:
             return
         if code == self.device.slot_code and event_type == "EV_ABS":
             self.current_slot = value
