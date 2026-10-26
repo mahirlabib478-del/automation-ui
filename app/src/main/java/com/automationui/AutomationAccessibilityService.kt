@@ -43,12 +43,15 @@ class AutomationAccessibilityService : AccessibilityService() {
             else -> return
         }
         val text = event.text?.joinToString(" ")?.trim()?.take(180)?.takeIf { it.isNotBlank() }
+        val source = event.source
+        val viewId = source?.viewIdResourceName
+        source?.recycle()
         WorkflowStore.addAction(this, RecordedAction(
             type = type,
             packageName = event.packageName?.toString(),
             // Do not persist typed text to reduce accidental secret capture.
             text = if (type == "TEXT_CHANGED") null else text,
-            viewId = event.source?.viewIdResourceName,
+            viewId = viewId,
             timestamp = System.currentTimeMillis()
         ))
         WorkflowStore.setStatus(this, "Recorded $type")
@@ -110,7 +113,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             val child = root.getChild(i) ?: continue
             val found = findNode(child, action)
             if (found != null) {
-                child.recycle()
+                if (found !== child) child.recycle()
                 return found
             }
             child.recycle()
