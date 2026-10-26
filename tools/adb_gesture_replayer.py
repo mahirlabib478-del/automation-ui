@@ -128,7 +128,7 @@ def action_coordinates(action: dict, recorded_width: int, recorded_height: int,
                 if pair is not None:
                     path_points.append(pair)
 
-        if kind == "SWIPE" and len(path_points) < 2:
+        if kind == "SWIPE" and 0 < len(path_points) < 2:
             raise ValueError(
                 "SWIPE has fewer than two usable path points. "
                 "Its direction cannot be reconstructed safely; record this workflow again."
