@@ -128,6 +128,45 @@ class ADBGgestureReplayerTests(unittest.TestCase):
         self.assertTrue(matched)
         self.assertIn("screen state matches", reason)
 
+    def test_transient_foreground_mismatch_is_tolerated_when_stable_ui_window_matches(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android",
+             "stateSnapshotReliable": True,
+             "uiSnapshotReliable": False,
+             "visibleTexts": []},
+            {"foregroundPackage": "com.google.android.gms",
+             "focusedWindowPackage": None,
+             "uiIdentityStable": True,
+             "uiFocusedWindowPackage": "com.instagram.android",
+             "uiForegroundPackage": "com.google.android.gms",
+             "uiSnapshotReliable": False,
+             "visibleTexts": []}
+        )
+        self.assertTrue(matched)
+        self.assertIn("screen state matches", reason)
+
+    def test_foreground_mismatch_still_fails_without_corroborating_ui_identity(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android"},
+            {"foregroundPackage": "com.google.android.gms",
+             "focusedWindowPackage": None,
+             "uiIdentityStable": False}
+        )
+        self.assertFalse(matched)
+        self.assertIn("foreground app differs", reason)
+
+    def test_known_focused_window_mismatch_remains_a_hard_stop(self):
+        matched, reason = state_matches(
+            {"foregroundPackage": "com.instagram.android",
+             "focusedWindowPackage": "com.instagram.android"},
+            {"foregroundPackage": "com.google.android.gms",
+             "focusedWindowPackage": "com.transsion.hilauncher",
+             "uiIdentityStable": True,
+             "uiFocusedWindowPackage": "com.instagram.android"}
+        )
+        self.assertFalse(matched)
+        self.assertIn("focused window differs", reason)
+
     def test_state_matches_same_package(self):
         matched, _ = state_matches(
             {"foregroundPackage": "com.example", "focusedWindowPackage": "com.example"},
