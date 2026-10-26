@@ -27,6 +27,7 @@ class AutomationAccessibilityService : AccessibilityService() {
     private var replayActionIndex = 0
     private var replayActionCount = 0
     private var lastForegroundPackage: String? = null
+    private val lastScrollPositions = mutableMapOf<String, Pair<Int, Long>>()
 
     private val replayReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -129,13 +130,42 @@ class AutomationAccessibilityService : AccessibilityService() {
 
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 val source = event.source
-                val delta = if (Build.VERSION.SDK_INT >= 28) event.scrollDeltaY else 0
+                val delta = resolveScrollDelta(event, source, packageName)
                 val action = buildAction("SCROLL", event, source, null, delta)
                 source?.recycle()
                 WorkflowStore.addAction(this, action)
                 WorkflowStore.setStatus(this, "Recorded SCROLL")
             }
         }
+    }
+
+    private fun resolveScrollDelta(
+        event: AccessibilityEvent,
+        source: AccessibilityNodeInfo?,
+        packageName: String?
+    ): Int {
+        if (Build.VERSION.SDK_INT >= 28 && event.scrollDeltaY != 0) {
+            return event.scrollDeltaY
+        }
+
+        val key = "${packageName.orEmpty()}|${source?.viewIdResourceName.orEmpty()}|${source?.className?.toString().orEmpty()}"
+        val now = System.currentTimeMillis()
+        val previous = lastScrollPositions[key]
+        lastScrollPositions[key] = event.scrollY to now
+
+        // Keep the small cache bounded and discard stale positions.
+        if (lastScrollPositions.size > 30) {
+            lastScrollPositions.entries.removeAll { now - it.value.second > 10_000L }
+            while (lastScrollPositions.size > 30) {
+                lastScrollPositions.remove(lastScrollPositions.keys.first())
+            }
+        }
+
+        if (previous != null && now - previous.second <= 10_000L) {
+            val inferred = event.scrollY - previous.first
+            if (inferred != 0) return inferred
+        }
+        return 0
     }
 
     private fun safeLabel(source: AccessibilityNodeInfo?, event: AccessibilityEvent): String? {
@@ -184,7 +214,9 @@ class AutomationAccessibilityService : AccessibilityService() {
         val bounds = Rect()
         source?.getBoundsInScreen(bounds)
         val sourceText = source?.takeIf { !it.isPassword && !it.isEditable }?.text?.toString()
-        val label = textOverride ?: sourceText
+        // Scroll containers often expose changing or child-derived text. Do not
+        // use that as a selector; match by container ID/class and screen bounds.
+        val label = if (type == "SCROLL") textOverride else textOverride ?: sourceText
         return RecordedAction(
             type = type,
             packageName = event.packageName?.toString(),
@@ -422,14 +454,17 @@ class AutomationAccessibilityService : AccessibilityService() {
                             if (scrolled) {
                                 setReplayStatus("Accessibility scroll applied")
                                 waitForNextTarget(nextAction, 400L, 0L, done)
-                            } else if (hasValidBounds(action)) {
-                                setReplayStatus("Scroll used swipe fallback")
+                            } else {
+                                // Accessibility scroll actions can fail on custom Settings
+                                // lists, and some events have no source bounds. Fall back to
+                                // a real swipe even when the selector/bounds are unavailable.
+                                setReplayStatus(
+                                    if (hasValidBounds(action)) "Scroll used container swipe fallback"
+                                    else "Scroll used screen swipe fallback"
+                                )
                                 dispatchSwipe(action, action.scrollDeltaY >= 0) {
                                     waitForNextTarget(nextAction, 400L, 0L, done)
                                 }
-                            } else {
-                                setReplayStatus("Skipped scroll: no usable scroll target or bounds")
-                                done()
                             }
                         }
                     }
