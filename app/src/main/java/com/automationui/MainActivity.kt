@@ -28,6 +28,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,6 +55,9 @@ class MainActivity : ComponentActivity() {
         var actions by remember { mutableStateOf(WorkflowStore.actions(this).toList()) }
         var replayLogs by remember { mutableStateOf(WorkflowStore.replayLogs(this)) }
         var recordText by remember { mutableStateOf(WorkflowStore.isRecordingText(this)) }
+        var waitTarget by remember { mutableStateOf("") }
+        var waitTimeoutSeconds by remember { mutableStateOf("15") }
+        var waitBeforeAction by remember { mutableStateOf("") }
 
         val exportLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("application/json")
@@ -252,6 +256,76 @@ class MainActivity : ComponentActivity() {
                     )
 
                     Divider()
+                    Text("Wait for UI condition", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Add a checkpoint before an action. Replay waits until this text is visible; if it times out, replay stops instead of blindly continuing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = waitTarget,
+                        onValueChange = { waitTarget = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Visible text or button label") },
+                        singleLine = true
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = waitBeforeAction,
+                            onValueChange = { waitBeforeAction = it.filter(Char::isDigit).take(3) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Before action #") },
+                            singleLine = true,
+                            placeholder = { Text("Last action") }
+                        )
+                        OutlinedTextField(
+                            value = waitTimeoutSeconds,
+                            onValueChange = { waitTimeoutSeconds = it.filter(Char::isDigit).take(3) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Timeout (seconds)") },
+                            singleLine = true
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val target = waitTarget.trim()
+                            val timeoutSeconds = waitTimeoutSeconds.toLongOrNull()?.coerceIn(1L, 120L) ?: 15L
+                            val current = WorkflowStore.actions(this@MainActivity)
+                            if (target.isBlank()) {
+                                WorkflowStore.setStatus(this@MainActivity, "Enter the text to wait for")
+                            } else {
+                                val waitAction = RecordedAction(
+                                    type = "WAIT_FOR_UI",
+                                    packageName = null,
+                                    text = target,
+                                    viewId = null,
+                                    contentDescription = null,
+                                    className = null,
+                                    left = 0, top = 0, right = 0, bottom = 0,
+                                    screenWidth = resources.displayMetrics.widthPixels,
+                                    screenHeight = resources.displayMetrics.heightPixels,
+                                    scrollDeltaY = 0,
+                                    timestamp = System.currentTimeMillis(),
+                                    waitTimeoutMs = timeoutSeconds * 1000L
+                                )
+                                val oneBasedPosition = waitBeforeAction.toIntOrNull()
+                                    ?.coerceIn(1, current.size.coerceAtLeast(1))
+                                    ?: current.size.coerceAtLeast(1)
+                                WorkflowStore.insertActionAt(this@MainActivity, waitAction, oneBasedPosition - 1)
+                                actions = WorkflowStore.actions(this@MainActivity).toList()
+                                waitTarget = ""
+                                waitBeforeAction = ""
+                                WorkflowStore.setStatus(
+                                    this@MainActivity,
+                                    "Inserted UI wait before action #$oneBasedPosition"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !recording
+                    ) { Text(if (recording) "Stop recording before adding UI wait" else "Insert UI wait before action") }
+
+                    Divider()
                     Text("Replay diagnostics", style = MaterialTheme.typography.titleMedium)
                     if (replayLogs.isEmpty()) {
                         Text(
@@ -289,6 +363,18 @@ class MainActivity : ComponentActivity() {
                                     if (action.type == "GESTURE") {
                                         Text(
                                             "${action.gestureKind ?: "UNKNOWN"} · ${action.gestureDurationMs} ms",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                    if (action.type == "WAIT") {
+                                        Text(
+                                            "Recorded pause · ${action.waitDurationMs / 1000.0}s",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                    if (action.type == "WAIT_FOR_UI") {
+                                        Text(
+                                            "Wait for visible text · timeout ${action.waitTimeoutMs / 1000}s",
                                             style = MaterialTheme.typography.labelSmall
                                         )
                                     }

@@ -36,6 +36,31 @@ class ReplayPolicyTest {
         inputValue = inputValue
     )
 
+    @Test fun recordedPausesAreInsertedForLongGapsOnly() {
+        val first = action(type = "CLICK", timestamp = 1_000L)
+        val shortGap = action(type = "CLICK", timestamp = 2_000L)
+        val longGap = action(type = "CLICK", timestamp = 5_000L)
+        val result = insertRecordedWaits(listOf(first, shortGap, longGap))
+        assertEquals(listOf("CLICK", "CLICK", "WAIT", "CLICK"), result.map { it.type })
+        assertEquals(3_000L, result[2].waitDurationMs)
+        assertEquals(2_000L, result[2].timestamp)
+    }
+
+    @Test fun recordedPauseIsCappedAtThirtySeconds() {
+        val first = action(type = "CLICK", timestamp = 1_000L)
+        val second = action(type = "CLICK", timestamp = 90_000L)
+        val result = insertRecordedWaits(listOf(first, second))
+        assertEquals(30_000L, result[1].waitDurationMs)
+    }
+
+    @Test fun explicitUiWaitPreventsDuplicateAutomaticPause() {
+        val first = action(type = "CLICK", timestamp = 1_000L)
+        val checkpoint = action(type = "WAIT_FOR_UI", timestamp = 5_000L, text = "Continue")
+        val second = action(type = "CLICK", timestamp = 9_000L)
+        val result = insertRecordedWaits(listOf(first, checkpoint, second))
+        assertEquals(listOf("CLICK", "WAIT_FOR_UI", "CLICK"), result.map { it.type })
+    }
+
     @Test fun firstActionHasNoArtificialDelay() {
         assertEquals(0L, ReplayPolicy.delayMs(null, 5_000L))
     }
