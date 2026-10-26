@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Automation UI</string>
+    <string name="accessibility_service_description">Records accessibility-visible UI actions and replays supported actions when requested.</string>
+</resources>
