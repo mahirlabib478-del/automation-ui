@@ -24,7 +24,7 @@ python -m pip install -r requirements-desktop.txt pyinstaller
 if errorlevel 1 goto :error
 
 if /I "%REQUIRE_LICENSE%"=="1" (
-    python -c "from desktop.licensing.license_core import license_enforcement_enabled; import sys; sys.exit(0 if license_enforcement_enabled() else 1)"
+    python -c "from desktop.licensing.license_core import license_public_key_valid; import sys; sys.exit(0 if license_public_key_valid() else 1)"
     if errorlevel 1 goto :error
 )
 
