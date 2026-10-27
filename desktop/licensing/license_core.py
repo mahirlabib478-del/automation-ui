@@ -114,6 +114,16 @@ def license_enforcement_enabled() -> bool:
     return license_public_key_configured()
 
 
+def license_public_key_valid() -> bool:
+    """Check that the embedded Ed25519 public key is correctly encoded and has the expected size."""
+    if not license_public_key_configured():
+        return False
+    try:
+        return len(base64.b64decode(_EMBEDDED_PUBLIC_KEY_B64, validate=True)) == 32
+    except (ValueError, binascii.Error):
+        return False
+
+
 def _parse_datetime(value: Any) -> datetime:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("License date is missing.")
