@@ -28,6 +28,13 @@ jobs:
       - name: Build GUI and helper executables
         shell: cmd
         run: desktop\build_windows.bat
+      - name: Smoke test packaged ADB helpers
+        shell: cmd
+        run: |
+          dist\adb-flow-studio-recorder.exe --help
+          if errorlevel 1 exit /b 1
+          dist\adb-flow-studio-replayer.exe --help
+          if errorlevel 1 exit /b 1
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
