@@ -1,0 +1,30 @@
+name: Desktop Python Tests
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-tests:
+    name: Desktop core tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile desktop and helper scripts
+        run: python -m compileall -q desktop tools
+      - name: Run desktop core tests
+        run: python -m unittest discover -s desktop/tests -v
