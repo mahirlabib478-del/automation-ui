@@ -1,0 +1,9 @@
+.venv-desktop/
+build/
+dist/
+*.spec
+__pycache__/
+*.py[cod]
+license_private_key.pem
+license-private-key.pem
+license-admin-keys/

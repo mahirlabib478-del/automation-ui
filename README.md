@@ -61,3 +61,24 @@ python adb_gesture_replayer.py --input adb-gestures.json
 ```
 
 The replayer scales normalized coordinates to the current logical display, preserves recorded idle gaps and swipe duration, checks display rotation, and verifies the recorded pre-touch foreground/window state when a fresh snapshot is available. Foreground/window snapshots and optional UI hierarchy text are sampled on independent threads and matched using the host monotonic clock, so slow UI dumps do not block foreground sampling. If a reliable screen state does not match within the timeout, replay stops rather than blindly tapping a different screen. UI text matching is best-effort and may be unavailable for secure or OEM-protected windows. Raw ADB capture is single-touch; multi-touch, protected system surfaces, and some hardware keys are not fully reproducible. Review workflows and logs before replay.
+
+
+## Windows Desktop Application (MVP)
+
+The desktop-mvp branch contains a Windows GUI for the ADB-only gesture recorder/replayer, with device selection, Capture, Replay, repeat count, delay, progress, Stop controls, per-run logs, and an offline license activation page.
+
+### Run from source
+
+    python -m pip install -r requirements-desktop.txt
+    python desktop/main.py
+
+### Build a Windows setup installer
+
+From a Windows checkout, run desktop\build_windows.bat to build the three executables. Install Inno Setup 6 and then run desktop\build_installer.bat. The setup file is dist\ADBFlowStudioSetup.exe. GitHub Actions also builds and smoke-tests the installer and publishes a temporary artifact from the Windows Desktop Build workflow: https://github.com/mahirlabib478-del/automation-ui/actions.
+
+### Offline licensing and release status
+
+License validation uses a signed Ed25519 key and is performed locally. The seller must generate and embed their own public signing key before creating a license-enforced commercial build. Keep the encrypted private signing key and its passphrase offline and out of the repository. See desktop/README.md for the full key-generation and license-issuance steps.
+
+The default build without a configured public key is a developer build and does not enforce activation. Do not sell it. Before a commercial release, embed the public key, build with REQUIRE_LICENSE=1, and complete clean-machine installation and real-device Capture/Replay tests. The Windows binaries are not code-signed, and offline licenses cannot be remotely revoked.
+

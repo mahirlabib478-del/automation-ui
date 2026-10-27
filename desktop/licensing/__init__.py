@@ -1,0 +1,1 @@
+"""Offline signed-license validation for ADB Flow Studio."""
