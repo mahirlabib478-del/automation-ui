@@ -1,0 +1,35 @@
+ADB FLOW STUDIO — QUICK START
+===============================
+
+1. INSTALL AND ACTIVATE
+- Install ADB Flow Studio and open it from the Start menu.
+- Open the License page and copy the Machine ID shown for this PC.
+- Send that Machine ID to the software seller and request an offline license key.
+- Paste the license key into the License Key box and select Activate License.
+- A license key is tied to the PC for which it was issued.
+
+2. CONNECT YOUR ANDROID PHONE
+- Install Android SDK Platform Tools on your PC. The app needs adb.exe.
+- On the phone, enable Developer options and USB debugging.
+- Connect the phone by USB and accept the USB debugging authorization prompt.
+- In ADB Flow Studio, open Settings and select adb.exe if ADB was not detected.
+- Refresh the device list and select the intended phone.
+
+3. CAPTURE A WORKFLOW
+- Open Capture and choose a JSON output path.
+- Start capture, perform the gestures on the phone, then select Stop and Save.
+- Check that the workflow JSON was saved before starting another capture.
+
+4. REPLAY A WORKFLOW SAFELY
+- Open Replay and choose the saved workflow.
+- Keep Dry Run enabled first to inspect the replay steps without sending touch input.
+- Choose how many times to repeat and the delay between runs.
+- For a real replay, turn Dry Run off. Confirm the warning only when the phone is unlocked and on the intended starting screen.
+- Do not touch the phone while a real replay is running. Use Stop if needed.
+
+IMPORTANT
+- This app uses ADB and USB debugging. Only replay workflows on devices you own or are authorized to control.
+- Screen-state verification is optional. If disabled, replay may continue even when the phone is on an unexpected screen.
+- The software currently supports ADB-based single-finger gesture capture/replay; OEM restrictions may affect capture.
+- Offline license activation does not require an internet connection. Replacing Windows or changing the PC identity may require a replacement license.
+- Keep your license key private. Do not share it with another person or PC.
