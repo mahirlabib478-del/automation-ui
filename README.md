@@ -65,14 +65,20 @@ The replayer scales normalized coordinates to the current logical display, prese
 
 ## Windows Desktop Application (MVP)
 
-A first Windows GUI is being developed on the desktop-mvp branch. It connects the existing ADB gesture recorder and replayer to a dashboard, device selector, capture controls, replay repeat count, delay, progress, stop controls, and logs.
+The desktop-mvp branch contains a Windows GUI for the ADB-only gesture recorder/replayer, with device selection, Capture, Replay, repeat count, delay, progress, Stop controls, per-run logs, and an offline license activation page.
 
-Desktop setup instructions are in desktop/README.md. Install the desktop dependency with:
+### Run from source
 
     python -m pip install -r requirements-desktop.txt
-
-Then launch from the repository root with:
-
     python desktop/main.py
 
-The GUI defaults to Dry Run and keeps screen-state verification off unless explicitly enabled. The offline signed-license workflow is implemented, but the seller must generate and embed their own public signing key before building a license-enforced release. The current CI artifact is a development build unless that key is configured. Do not sell it until the seller key is configured and the final installer has passed clean-machine and real-device tests.
+### Build a Windows setup installer
+
+From a Windows checkout, run desktop\build_windows.bat to build the three executables. Install Inno Setup 6 and then run desktop\build_installer.bat. The setup file is dist\ADBFlowStudioSetup.exe. GitHub Actions also builds and smoke-tests the installer and publishes a temporary artifact from the Windows Desktop Build workflow: https://github.com/mahirlabib478-del/automation-ui/actions.
+
+### Offline licensing and release status
+
+License validation uses a signed Ed25519 key and is performed locally. The seller must generate and embed their own public signing key before creating a license-enforced commercial build. Keep the encrypted private signing key and its passphrase offline and out of the repository. See desktop/README.md for the full key-generation and license-issuance steps.
+
+The default build without a configured public key is a developer build and does not enforce activation. Do not sell it. Before a commercial release, embed the public key, build with REQUIRE_LICENSE=1, and complete clean-machine installation and real-device Capture/Replay tests. The Windows binaries are not code-signed, and offline licenses cannot be remotely revoked.
+

@@ -36,12 +36,17 @@ The desktop GUI does not remove the underlying ADB limitations: capture is singl
     python -m unittest discover -s desktop\tests -v
     python -m compileall -q desktop tools
 
-## Build Windows executables
+## Build the Windows installer
 
-Run desktop\build_windows.bat from a Windows checkout. The script creates a local build environment and packages the GUI plus separate recorder/replayer worker executables. The complete dist folder must be kept together because the GUI launches the worker executables beside it.
+1. Install Python 3.11 or newer and Android Platform Tools.
+2. Run desktop\build_windows.bat from a Windows checkout. This builds the GUI, recorder helper, and replayer helper into dist\.
+3. Install Inno Setup 6 on the build PC.
+4. Run desktop\build_installer.bat. The installer is created at dist\ADBFlowStudioSetup.exe.
+5. The Windows Desktop Build workflow also builds the installer, tests both helper executables, silently installs and uninstalls the setup package, and uploads an installer artifact for 14 days. See the GitHub Actions page: https://github.com/mahirlabib478-del/automation-ui/actions.
 
-Do not distribute this build commercially until offline license enforcement, signing-key handling, clean-machine installation, and end-to-end device tests have been completed.
+The recommended customer package is ADBFlowStudioSetup.exe. The three standalone executables must stay together if you distribute them without the installer.
 
+**Commercial release warning:** the default CI build is a developer build unless desktop\licensing\license_public_key.py exists. Generate your own signing keypair and embed the public key before selling. The application is not code-signed, and a real Android-device test is still required before release.
 
 ## Offline licensing setup for the seller
 
@@ -54,8 +59,7 @@ The signed-license system uses Ed25519 and validates licenses locally. The first
 2. Enter a strong passphrase when prompted. The encrypted private key is written by default to Documents\ADB Flow Studio Admin\license_private_key.pem, outside the repository. The public module is created at desktop\licensing\license_public_key.py. The public module is safe to commit; the private key and passphrase must never be committed or sent to customers.
 3. Build a license-enforced release from a checkout that contains your public module:
 
-    set REQUIRE_LICENSE=1
-    desktop\build_windows.bat
+    set REQUIRE_LICENSE=1 && desktop\build_windows.bat && desktop\build_installer.bat
 
 4. On a customer's PC, open the License page and copy the displayed Machine ID. Issue a license on the trusted seller PC:
 
