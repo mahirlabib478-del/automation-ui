@@ -34,7 +34,9 @@ try:
         parse_rotation,
         run_adb,
     )
-except ModuleNotFoundError:
+except ModuleNotFoundError as exc:
+    if exc.name not in {"tools", "tools.adb_gesture_recorder"}:
+        raise
     # Backwards-compatible fallback for callers that put tools/ directly on sys.path.
     from adb_gesture_recorder import (
         capture_foreground_state,
