@@ -20,13 +20,29 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from adb_gesture_recorder import (
-    capture_foreground_state,
-    capture_visible_ui_texts,
-    parse_display_size,
-    parse_rotation,
-    run_adb,
-)
+# Support both direct script execution (python tools\\adb_gesture_replayer.py)
+# and packaged/imported execution where the repository package is available.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from tools.adb_gesture_recorder import (
+        capture_foreground_state,
+        capture_visible_ui_texts,
+        parse_display_size,
+        parse_rotation,
+        run_adb,
+    )
+except ModuleNotFoundError:
+    # Backwards-compatible fallback for callers that put tools/ directly on sys.path.
+    from adb_gesture_recorder import (
+        capture_foreground_state,
+        capture_visible_ui_texts,
+        parse_display_size,
+        parse_rotation,
+        run_adb,
+    )
 
 
 def load_actions(path: Path) -> tuple[list[dict], dict]:
