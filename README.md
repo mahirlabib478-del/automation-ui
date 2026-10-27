@@ -61,3 +61,18 @@ python adb_gesture_replayer.py --input adb-gestures.json
 ```
 
 The replayer scales normalized coordinates to the current logical display, preserves recorded idle gaps and swipe duration, checks display rotation, and verifies the recorded pre-touch foreground/window state when a fresh snapshot is available. Foreground/window snapshots and optional UI hierarchy text are sampled on independent threads and matched using the host monotonic clock, so slow UI dumps do not block foreground sampling. If a reliable screen state does not match within the timeout, replay stops rather than blindly tapping a different screen. UI text matching is best-effort and may be unavailable for secure or OEM-protected windows. Raw ADB capture is single-touch; multi-touch, protected system surfaces, and some hardware keys are not fully reproducible. Review workflows and logs before replay.
+
+
+## Windows Desktop Application (MVP)
+
+A first Windows GUI is being developed on the desktop-mvp branch. It connects the existing ADB gesture recorder and replayer to a dashboard, device selector, capture controls, replay repeat count, delay, progress, stop controls, and logs.
+
+Desktop setup instructions are in desktop/README.md. Install the desktop dependency with:
+
+    python -m pip install -r requirements-desktop.txt
+
+Then launch from the repository root with:
+
+    python desktop/main.py
+
+The GUI defaults to Dry Run and keeps screen-state verification off unless explicitly enabled. This desktop MVP is not ready for commercial distribution yet: the digitally signed, PC-bound offline license system and final Windows installer validation remain to be implemented.
