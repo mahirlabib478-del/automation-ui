@@ -15,9 +15,9 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows desktop package
+    name: Build Windows desktop installer
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,10 +35,26 @@ jobs:
           if errorlevel 1 exit /b 1
           dist\adb-flow-studio-replayer.exe --help
           if errorlevel 1 exit /b 1
-      - name: Upload Windows build
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build Windows installer
+        shell: cmd
+        run: desktop\build_installer.bat
+      - name: Smoke test silent installer and uninstall
+        shell: cmd
+        run: |
+          dist\ADBFlowStudioSetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="%RUNNER_TEMP%\ADBFlowStudioSmokeTest"
+          if errorlevel 1 exit /b 1
+          if not exist "%RUNNER_TEMP%\ADBFlowStudioSmokeTest\ADBFlowStudio.exe" exit /b 1
+          if not exist "%RUNNER_TEMP%\ADBFlowStudioSmokeTest\adb-flow-studio-recorder.exe" exit /b 1
+          if not exist "%RUNNER_TEMP%\ADBFlowStudioSmokeTest\adb-flow-studio-replayer.exe" exit /b 1
+          "%RUNNER_TEMP%\ADBFlowStudioSmokeTest\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if errorlevel 1 exit /b 1
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: adb-flow-studio-windows-mvp
-          path: dist\*.exe
+          name: adb-flow-studio-windows-installer
+          path: dist\ADBFlowStudioSetup.exe
           if-no-files-found: error
           retention-days: 14
