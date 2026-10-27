@@ -9,6 +9,10 @@ on:
       - "**"
   workflow_dispatch:
 
+concurrency:
+  group: desktop-python-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
