@@ -10,7 +10,7 @@ if /I "%REQUIRE_LICENSE%"=="1" if not exist "desktop\licensing\license_public_ke
 
 echo [1/5] Creating build environment...
 if not exist ".venv-desktop\Scripts\python.exe" (
-    py -3 -m venv .venv-desktop
+    python -m venv .venv-desktop
     if errorlevel 1 goto :error
 )
 
