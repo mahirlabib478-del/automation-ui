@@ -37,6 +37,14 @@ from desktop.core.command_worker import CommandWorker
 from desktop.core.device_manager import list_devices, resolve_adb
 from desktop.core.runner import build_capture_command, build_child_environment, build_replay_command
 from desktop.core.workflow import list_workflows, summarize_workflow
+from desktop.licensing.license_core import (
+    current_license_status,
+    format_machine_id,
+    get_machine_id,
+    license_enforcement_enabled,
+    save_stored_license,
+    validate_license_key,
+)
 
 
 APP_NAME = "ADB Flow Studio"
@@ -125,6 +133,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.refresh_workflows()
         self.refresh_devices()
+        self.refresh_license_status()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -477,19 +486,51 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         panel = _panel()
-        panel.layout().addWidget(_section_title("Offline License Manager", "License activation is planned for the next implementation phase."))
-        status = QLabel("LICENSE SYSTEM NOT IMPLEMENTED IN THIS BUILD")
-        status.setStyleSheet("background: #FFF4E5; color: #9A6700; border: 1px solid #F5D49A; border-radius: 8px; padding: 12px; font-weight: 800;")
-        panel.layout().addWidget(status)
-        body = QLabel(
-            "The planned commercial version will use a digitally signed license key bound to a PC. "
-            "License validation will run locally and will not require an internet connection. "
-            "The private signing key will stay outside the application and source repository.\n\n"
-            "This first desktop build does not yet enforce licensing and is not ready for commercial distribution."
+        panel.layout().addWidget(_section_title(
+            "Offline License Manager",
+            "Activation is validated locally with an Ed25519 signature. No internet connection is required.",
+        ))
+
+        self.license_status_banner = QLabel("Checking license status…")
+        self.license_status_banner.setWordWrap(True)
+        self.license_status_banner.setStyleSheet(
+            "background: #FFF4E5; color: #9A6700; border: 1px solid #F5D49A; "
+            "border-radius: 8px; padding: 12px; font-weight: 800;"
         )
-        body.setWordWrap(True)
-        body.setStyleSheet("font-size: 13px; color: #344054; line-height: 1.4;")
-        panel.layout().addWidget(body)
+        panel.layout().addWidget(self.license_status_banner)
+
+        panel.layout().addWidget(QLabel("This PC's Machine ID"))
+        machine_row = QHBoxLayout()
+        self.license_machine_id_edit = QLineEdit(format_machine_id(get_machine_id()))
+        self.license_machine_id_edit.setReadOnly(True)
+        machine_row.addWidget(self.license_machine_id_edit, 1)
+        copy_machine_button = QPushButton("Copy ID")
+        copy_machine_button.clicked.connect(self.copy_machine_id)
+        machine_row.addWidget(copy_machine_button)
+        panel.layout().addLayout(machine_row)
+
+        panel.layout().addWidget(QLabel("License Key"))
+        self.license_key_edit = QLineEdit()
+        self.license_key_edit.setPlaceholderText("Paste your AFS1 signed license key here")
+        panel.layout().addWidget(self.license_key_edit)
+
+        self.activate_license_button = QPushButton("Activate License")
+        self.activate_license_button.setObjectName("PrimaryButton")
+        self.activate_license_button.clicked.connect(self.activate_license)
+        panel.layout().addWidget(self.activate_license_button)
+
+        self.license_details_label = QLabel("")
+        self.license_details_label.setWordWrap(True)
+        self.license_details_label.setObjectName("Muted")
+        panel.layout().addWidget(self.license_details_label)
+
+        help_label = QLabel(
+            "For the seller: generate an Ed25519 keypair with tools/license_admin.py. "
+            "Keep the encrypted private key and its passphrase offline. The public key module is safe to embed in the app."
+        )
+        help_label.setWordWrap(True)
+        help_label.setStyleSheet("background: #EFF6FF; color: #1849A9; border-radius: 8px; padding: 12px;")
+        panel.layout().addWidget(help_label)
         layout.addWidget(panel)
         layout.addStretch(1)
         return page
@@ -688,6 +729,85 @@ class MainWindow(QMainWindow):
             self.workflow_path_combo.setEditText(path)
             self._update_workflow_summary()
 
+    def copy_machine_id(self) -> None:
+        QApplication.clipboard().setText(format_machine_id(get_machine_id()))
+        self.license_status_banner.setText("Machine ID copied to clipboard.")
+
+    def refresh_license_status(self) -> None:
+        status = current_license_status()
+        self.license_machine_id_edit.setText(format_machine_id(status.machine_id))
+        self.activate_license_button.setEnabled(status.enforcement_enabled)
+        self.license_status_banner.setText(status.message)
+
+        if not status.enforcement_enabled:
+            self.dashboard_license_value.setText("Dev build")
+            self.license_status_banner.setStyleSheet(
+                "background: #FFF4E5; color: #9A6700; border: 1px solid #F5D49A; "
+                "border-radius: 8px; padding: 12px; font-weight: 800;"
+            )
+            self.license_details_label.setText(
+                "License enforcement is inactive because no public signing key is embedded. "
+                "This is intended for development only. Generate the keypair and rebuild before commercial distribution."
+            )
+            return
+
+        if status.activated:
+            self.dashboard_license_value.setText("Active")
+            self.license_status_banner.setStyleSheet(
+                "background: #EAF7EF; color: #167647; border: 1px solid #B7E4C7; "
+                "border-radius: 8px; padding: 12px; font-weight: 800;"
+            )
+            payload = status.payload or {}
+            expiry = payload.get("expires_at") or "Never"
+            self.license_details_label.setText(
+                f"Customer: {payload.get('customer', 'Unknown')}  ·  "
+                f"License ID: {payload.get('license_id', 'Unknown')}  ·  Expires: {expiry}"
+            )
+        else:
+            self.dashboard_license_value.setText("Not activated")
+            self.license_status_banner.setStyleSheet(
+                "background: #FFF4E5; color: #9A6700; border: 1px solid #F5D49A; "
+                "border-radius: 8px; padding: 12px; font-weight: 800;"
+            )
+            self.license_details_label.setText(
+                "Paste the signed key issued for this Machine ID. " + status.message
+            )
+
+    def activate_license(self) -> None:
+        if not license_enforcement_enabled():
+            self.refresh_license_status()
+            return
+        token = self.license_key_edit.text().strip()
+        if not token:
+            QMessageBox.warning(self, "License key required", "Paste the license key before activating.")
+            return
+        result = validate_license_key(token, machine_id=get_machine_id())
+        if not result.valid:
+            self.license_status_banner.setText(result.message)
+            self.license_details_label.setText(result.message)
+            QMessageBox.warning(self, "Activation failed", result.message)
+            return
+        try:
+            save_stored_license(token)
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not save license", str(exc))
+            return
+        self.refresh_license_status()
+        QMessageBox.information(self, "License activated", "The license was validated and saved on this PC.")
+
+    def _require_license(self) -> bool:
+        status = current_license_status()
+        if status.activated:
+            return True
+        QMessageBox.warning(
+            self,
+            "License required",
+            "Activate a valid license for this PC before using Capture or Replay.",
+        )
+        self.refresh_license_status()
+        self.switch_page(3)
+        return False
+
     def _browse_adb(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Select adb executable", self.adb_path_edit.text(), "ADB executable (adb.exe);;All files (*)"
@@ -715,6 +835,8 @@ class MainWindow(QMainWindow):
 
     def start_capture(self) -> None:
         if self.active_worker is not None:
+            return
+        if not self._require_license():
             return
         serial = self._require_device()
         if not serial:
@@ -782,6 +904,8 @@ class MainWindow(QMainWindow):
 
     def start_replay(self) -> None:
         if self.active_worker is not None:
+            return
+        if not self._require_license():
             return
         serial = self._require_device()
         if not serial:
