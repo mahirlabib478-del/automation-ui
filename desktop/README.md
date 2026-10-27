@@ -14,7 +14,7 @@ ADB Flow Studio is the first Windows desktop interface for the existing ADB-only
 
 ## Important status
 
-**This MVP is not ready for commercial sale yet.** The License page is a placeholder. The digitally signed, PC-bound offline license system and final installer validation are planned for the next phase.
+**This MVP is not ready for commercial sale yet.** The offline Ed25519 license validation and activation UI are implemented, but the seller must generate and embed their own public signing key before building a license-enforced release. The Windows installer still needs clean-machine testing and a real-device end-to-end test.
 
 The desktop GUI does not remove the underlying ADB limitations: capture is single-finger; some Android/OEM builds block getevent; and ADB shell input approximates recorded curved swipes as straight swipes.
 
