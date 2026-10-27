@@ -2,6 +2,12 @@
 setlocal
 cd /d "%~dp0\.."
 
+if /I "%REQUIRE_LICENSE%"=="1" if not exist "desktop\licensing\license_public_key.py" (
+    echo ERROR: Production licensing requested but desktop\licensing\license_public_key.py is missing.
+    echo Run tools\license_admin.py generate-keys first, then rebuild.
+    goto :error
+)
+
 echo [1/5] Creating build environment...
 if not exist ".venv-desktop\Scripts\python.exe" (
     py -3 -m venv .venv-desktop
@@ -16,6 +22,11 @@ python -m pip install --upgrade pip
 if errorlevel 1 goto :error
 python -m pip install -r requirements-desktop.txt pyinstaller
 if errorlevel 1 goto :error
+
+if /I "%REQUIRE_LICENSE%"=="1" (
+    python -c "from desktop.licensing.license_core import license_enforcement_enabled; import sys; sys.exit(0 if license_enforcement_enabled() else 1)"
+    if errorlevel 1 goto :error
+)
 
 echo [3/5] Running unit tests...
 python -m unittest discover -s desktop\tests -v
