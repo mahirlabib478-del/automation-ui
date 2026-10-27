@@ -6,6 +6,10 @@ on:
       - desktop-mvp
   workflow_dispatch:
 
+concurrency:
+  group: windows-desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
