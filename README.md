@@ -75,4 +75,4 @@ Then launch from the repository root with:
 
     python desktop/main.py
 
-The GUI defaults to Dry Run and keeps screen-state verification off unless explicitly enabled. This desktop MVP is not ready for commercial distribution yet: the digitally signed, PC-bound offline license system and final Windows installer validation remain to be implemented.
+The GUI defaults to Dry Run and keeps screen-state verification off unless explicitly enabled. The offline signed-license workflow is implemented, but the seller must generate and embed their own public signing key before building a license-enforced release. The current CI artifact is a development build unless that key is configured. Do not sell it until the seller key is configured and the final installer has passed clean-machine and real-device tests.
