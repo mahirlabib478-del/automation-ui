@@ -74,7 +74,10 @@ class LicenseCoreTests(unittest.TestCase):
     def test_tampered_signature_is_rejected(self) -> None:
         token = create_license_token(self.payload, self.private_key)
         prefix, payload_part, signature_part = token.split(".")
-        changed = signature_part[:-1] + ("A" if signature_part[-1] != "A" else "B")
+        padded = signature_part + ("=" * ((4 - len(signature_part) % 4) % 4))
+        signature = base64.urlsafe_b64decode(padded.encode("ascii"))
+        signature = bytes([signature[0] ^ 1]) + signature[1:]
+        changed = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
         result = validate_license_key(
             f"{prefix}.{payload_part}.{changed}",
             machine_id=self.machine_id,
