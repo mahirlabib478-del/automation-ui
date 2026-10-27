@@ -555,6 +555,8 @@ class MainWindow(QMainWindow):
             self.device_combo.addItem("ADB not found — configure Settings", None)
             self.status_pill.setText("ADB not found")
             self.status_pill.setProperty("offline", True)
+            self.status_pill.style().unpolish(self.status_pill)
+            self.status_pill.style().polish(self.status_pill)
             self.dashboard_device_value.setText("Not found")
             self.device_combo.blockSignals(False)
             self._refresh_metric_counts()
@@ -563,7 +565,7 @@ class MainWindow(QMainWindow):
         self.resolved_adb_path = adb
         try:
             devices = list_devices(adb)
-        except (OSError, ValueError, TimeoutError, Exception) as exc:
+        except Exception as exc:
             self.device_combo.addItem("Could not query ADB devices", None)
             self.status_pill.setText("ADB error")
             self.status_pill.setProperty("offline", True)
@@ -717,10 +719,11 @@ class MainWindow(QMainWindow):
         serial = self._require_device()
         if not serial:
             return
-        output_path = Path(self.capture_output_edit.text().strip()).expanduser()
-        if not str(output_path):
+        output_text = self.capture_output_edit.text().strip()
+        if not output_text:
             QMessageBox.warning(self, "Choose output file", "Choose a path for the workflow JSON.")
             return
+        output_path = Path(output_text).expanduser()
         if output_path.exists():
             answer = QMessageBox.question(
                 self,
@@ -952,8 +955,16 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self.active_worker.stop()
-            self.active_worker.wait(3500)
+            worker = self.active_worker
+            worker.stop()
+            if not worker.wait(6000):
+                QMessageBox.warning(
+                    self,
+                    "Operation still stopping",
+                    "The ADB helper is still shutting down. Wait a moment and close the application again.",
+                )
+                event.ignore()
+                return
         event.accept()
 
 
