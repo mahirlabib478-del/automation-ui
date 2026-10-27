@@ -9,7 +9,7 @@ import os
 import platform
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -173,7 +173,7 @@ def validate_license_key(
     try:
         issued_at = _parse_datetime(payload.get("issued_at"))
         current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if issued_at > current_time.replace(microsecond=0) + __import__("datetime").timedelta(minutes=10):
+        if issued_at > current_time.replace(microsecond=0) + timedelta(minutes=10):
             return LicenseValidation(False, "License issue time is in the future.")
         expires_at = payload.get("expires_at")
         if expires_at:
